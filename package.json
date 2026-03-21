@@ -1,7 +1,7 @@
 {
   "name": "heymax",
   "version": "1.2.2",
-  "description": "Max — a personal AI assistant for developers, built on the GitHub Copilot SDK",
+  "description": "Max — a personal AI assistant for developers with Copilot and Mastra runtimes",
   "bin": {
     "max": "dist/cli.js"
   },
@@ -19,7 +19,7 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "keywords": [
     "copilot",
@@ -40,6 +40,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@mastra/core": "^1.15.0",
     "@github/copilot-sdk": "0.1.30",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",

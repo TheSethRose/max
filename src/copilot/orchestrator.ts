@@ -1,9 +1,9 @@
 import { createTools, type WorkerInfo } from "./tools.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
-import { config, DEFAULT_AI_MODEL } from "../config.js";
+import { config, getDefaultAiModel } from "../config.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
-import { resetClient } from "../ai/runtime.js";
+import { getWorkerClient, resetClient } from "../ai/runtime.js";
 import { logConversation, getState, setState, deleteState, getMemorySummary, getRecentConversation } from "../store/db.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { resolveModel, type Tier, type RouteResult } from "./router.js";
@@ -77,6 +77,7 @@ export function getCurrentSourceChannel(): "telegram" | "tui" | undefined {
 function getSessionConfig() {
   const tools = createTools({
     client: aiClient!,
+    getWorkerClient,
     workers,
     onWorkerComplete: feedBackgroundResult,
   });
@@ -242,8 +243,9 @@ export async function initOrchestrator(client: AIClient): Promise<void> {
     const configured = config.aiModel;
     const isAvailable = models.some((m) => m.id === configured);
     if (!isAvailable) {
-      console.log(`[max] ⚠️ Configured model '${configured}' is not available. Falling back to '${DEFAULT_AI_MODEL}'.`);
-      config.aiModel = DEFAULT_AI_MODEL;
+      const fallbackModel = getDefaultAiModel(config.aiProvider);
+      console.log(`[max] ⚠️ Configured model '${configured}' is not available. Falling back to '${fallbackModel}'.`);
+      config.aiModel = fallbackModel;
     }
   } catch (err) {
     console.log(`[max] Could not validate model (will use '${config.aiModel}' as-is): ${err instanceof Error ? err.message : err}`);

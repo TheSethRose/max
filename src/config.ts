@@ -2,7 +2,7 @@ import { config as loadEnv } from "dotenv";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "fs";
 import { ENV_PATH, ensureMaxHome } from "./paths.js";
-import { SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
+import { normalizeAiProviderName, SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
 
 // Load from ~/.max/.env, fall back to cwd .env for dev
 loadEnv({ path: ENV_PATH });
@@ -46,23 +46,67 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6";
 export const DEFAULT_AI_MODEL = DEFAULT_MODEL;
 export const DEFAULT_PROVIDER: AIProviderName = "copilot";
 export const DEFAULT_CLASSIFIER_MODEL = "gpt-4.1";
+export const DEFAULT_MASTRA_MODEL = "openai/gpt-4.1";
+export const DEFAULT_MASTRA_CLASSIFIER_MODEL = DEFAULT_MASTRA_MODEL;
 
-const parsedProvider = (raw.AI_PROVIDER || DEFAULT_PROVIDER).trim();
-if (!SUPPORTED_AI_PROVIDERS.includes(parsedProvider as AIProviderName)) {
+export function getDefaultAiModel(provider: AIProviderName = DEFAULT_PROVIDER): string {
+  return provider === "mastra" ? DEFAULT_MASTRA_MODEL : DEFAULT_AI_MODEL;
+}
+
+export function getDefaultClassifierModel(provider: AIProviderName = DEFAULT_PROVIDER): string {
+  return provider === "mastra" ? DEFAULT_MASTRA_CLASSIFIER_MODEL : DEFAULT_CLASSIFIER_MODEL;
+}
+
+function persistLegacyProviderMigration(previousValue: string, nextValue: AIProviderName): void {
+  const trimmedPreviousValue = previousValue.trim();
+  if (!trimmedPreviousValue || trimmedPreviousValue === nextValue) {
+    return;
+  }
+
+  try {
+    const content = readFileSync(ENV_PATH, "utf-8");
+    const lines = content.split("\n");
+    let updated = false;
+    const rewritten = lines.map((line) => {
+      if (line.startsWith("AI_PROVIDER=")) {
+        updated = true;
+        return `AI_PROVIDER=${nextValue}`;
+      }
+      return line;
+    });
+    if (updated) {
+      writeFileSync(ENV_PATH, rewritten.join("\n"));
+    }
+  } catch {
+    // Best-effort migration only.
+  }
+}
+
+const normalizedProvider = normalizeAiProviderName(raw.AI_PROVIDER);
+const parsedProvider = normalizedProvider ?? DEFAULT_PROVIDER;
+if (raw.AI_PROVIDER && !normalizedProvider) {
   throw new Error(
     `AI_PROVIDER must be one of: ${SUPPORTED_AI_PROVIDERS.join(", ")}. Got: "${raw.AI_PROVIDER}"`,
   );
 }
 
-let _aiModel = raw.AI_MODEL || raw.COPILOT_MODEL || DEFAULT_AI_MODEL;
+if (raw.AI_PROVIDER?.trim().toLowerCase() === "maestra") {
+  console.warn("[max] Detected legacy AI_PROVIDER=maestra. Migrating to AI_PROVIDER=mastra.");
+  process.env.AI_PROVIDER = parsedProvider;
+  persistLegacyProviderMigration(raw.AI_PROVIDER, parsedProvider);
+}
+
+let _aiModel = raw.AI_MODEL
+  || (parsedProvider === "copilot" ? raw.COPILOT_MODEL : undefined)
+  || getDefaultAiModel(parsedProvider);
 
 export const config = {
   telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
   authorizedUserId: parsedUserId,
   apiPort: parsedPort,
   workerTimeoutMs: parsedWorkerTimeout,
-  aiProvider: parsedProvider as AIProviderName,
-  classifierModel: raw.CLASSIFIER_MODEL || DEFAULT_CLASSIFIER_MODEL,
+  aiProvider: parsedProvider,
+  classifierModel: raw.CLASSIFIER_MODEL || getDefaultClassifierModel(parsedProvider),
   get aiModel(): string {
     return _aiModel;
   },

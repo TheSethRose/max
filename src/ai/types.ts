@@ -1,8 +1,25 @@
 import type { ZodType, ZodTypeAny } from "zod";
 
-export const SUPPORTED_AI_PROVIDERS = ["copilot"] as const;
+export const SUPPORTED_AI_PROVIDERS = ["copilot", "mastra"] as const;
+const LEGACY_AI_PROVIDER_ALIASES = {
+  maestra: "mastra",
+} as const;
 
 export type AIProviderName = (typeof SUPPORTED_AI_PROVIDERS)[number];
+
+export function normalizeAiProviderName(provider: string | undefined): AIProviderName | undefined {
+  const normalized = provider?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (SUPPORTED_AI_PROVIDERS.includes(normalized as AIProviderName)) {
+    return normalized as AIProviderName;
+  }
+
+  const legacyMatch = LEGACY_AI_PROVIDER_ALIASES[normalized as keyof typeof LEGACY_AI_PROVIDER_ALIASES];
+  return legacyMatch;
+}
 
 export interface AIModelInfo {
   id: string;

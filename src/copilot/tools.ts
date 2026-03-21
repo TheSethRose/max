@@ -48,6 +48,7 @@ export interface WorkerInfo {
 
 export interface ToolDeps {
   client: AIClient;
+  getWorkerClient: () => Promise<AIClient>;
   workers: Map<string, WorkerInfo>;
   onWorkerComplete: (name: string, result: string) => void;
 }
@@ -56,8 +57,8 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
   return [
     defineAiTool("create_worker_session", {
       description:
-        "Create a new Copilot CLI worker session in a specific directory. " +
-        "Use for coding tasks, debugging, file operations. " +
+        "Create a new coding worker session in a specific directory. " +
+        "Use for coding tasks, debugging, and file operations. " +
         "Returns confirmation with session name.",
       parameters: z.object({
         name: z.string().describe("Short descriptive name for the session, e.g. 'auth-fix'"),
@@ -83,7 +84,8 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
           return `Worker limit reached (${MAX_CONCURRENT_WORKERS}). Active: ${names}. Kill a session first.`;
         }
 
-        const session = await deps.client.createSession({
+        const workerClient = await deps.getWorkerClient();
+        const session = await workerClient.createSession({
           model: config.aiModel,
           configDir: SESSIONS_DIR,
           workingDirectory: args.working_dir,
@@ -101,7 +103,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
         // Persist to SQLite
         const db = getDb();
         db.prepare(
-          `INSERT OR REPLACE INTO worker_sessions (name, copilot_session_id, working_dir, status)
+          `INSERT OR REPLACE INTO worker_sessions (name, session_id, working_dir, status)
            VALUES (?, ?, ?, 'idle')`
         ).run(args.name, session.sessionId, args.working_dir);
 
@@ -241,12 +243,15 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
         "List ALL Copilot CLI sessions on this machine — including sessions started from VS Code, " +
         "the terminal, or other tools. Shows session ID, summary, working directory. " +
         "Use this when the user asks about existing sessions running on the machine. " +
-        "By default shows the 20 most recently active sessions.",
+        "By default shows the 20 most recently active sessions. Copilot-only.",
       parameters: z.object({
         cwd_filter: z.string().optional().describe("Optional: only show sessions whose working directory contains this string"),
         limit: z.number().int().min(1).max(100).optional().describe("Max sessions to return (default 20)"),
       }),
       handler: async (args) => {
+        if (config.aiProvider !== "copilot") {
+          return "Machine session discovery is only available when AI_PROVIDER=copilot.";
+        }
         const sessionStateDir = join(homedir(), ".copilot", "session-state");
         const limit = args.limit || 20;
 
@@ -298,18 +303,22 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
     defineAiTool("attach_machine_session", {
       description:
         "Attach to an existing Copilot CLI session on this machine (e.g. one started from VS Code or terminal). " +
-        "Resumes the session and adds it as a managed worker so you can send prompts to it.",
+        "Resumes the session and adds it as a managed worker so you can send prompts to it. Copilot-only.",
       parameters: z.object({
         session_id: z.string().describe("The session ID to attach to (from list_machine_sessions)"),
         name: z.string().describe("A short name to reference this session by, e.g. 'vscode-main'"),
       }),
       handler: async (args) => {
+        if (config.aiProvider !== "copilot") {
+          return "Attaching to existing machine sessions is only available when AI_PROVIDER=copilot.";
+        }
         if (deps.workers.has(args.name)) {
           return `A worker named '${args.name}' already exists. Choose a different name.`;
         }
 
         try {
-          const session = await deps.client.resumeSession(args.session_id, {
+          const workerClient = await deps.getWorkerClient();
+          const session = await workerClient.resumeSession(args.session_id, {
             model: config.aiModel,
           });
 
@@ -324,7 +333,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
 
           const db = getDb();
           db.prepare(
-            `INSERT OR REPLACE INTO worker_sessions (name, copilot_session_id, working_dir, status)
+            `INSERT OR REPLACE INTO worker_sessions (name, session_id, working_dir, status)
              VALUES (?, ?, '(attached)', 'idle')`
           ).run(args.name, args.session_id);
 

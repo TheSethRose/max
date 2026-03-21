@@ -1,8 +1,13 @@
 # Max
 
-AI orchestrator powered by [Copilot SDK](https://github.com/github/copilot-sdk) — control multiple Copilot CLI sessions from Telegram or a local terminal.
+AI orchestrator powered by the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) and [Mastra](https://mastra.ai/) — control coding workers and conversations from Telegram or a local terminal.
 
-The runtime is now **provider-configurable via environment variables**, with **GitHub Copilot remaining the default and only built-in provider** for now.
+Max now supports two explicit runtime selections during setup:
+
+- **Use Copilot** — the original Copilot SDK / Copilot CLI-based experience
+- **Use Mastra** — a Mastra-backed runtime that uses provider/model IDs like `openai/gpt-4.1` and gives workers a local workspace with filesystem + command execution
+
+GitHub Copilot remains the default.
 
 ## Install
 
@@ -26,11 +31,15 @@ max setup
 
 This creates `~/.max/` and walks you through configuration (Telegram bot token, etc.). Telegram is optional — you can use Max with just the terminal UI.
 
-### 2. Make sure Copilot CLI is authenticated
+During setup you'll choose either **GitHub Copilot** or **Mastra**.
+
+### 2. Make sure your selected runtime is ready
 
 ```bash
 copilot login
 ```
+
+If you selected **Mastra**, setup will save or prompt for the provider API key that matches your model (for example `OPENAI_API_KEY` for `openai/gpt-4.1`).
 
 ### Runtime configuration
 
@@ -41,6 +50,13 @@ Supported variables:
 - `AI_PROVIDER=copilot`
 - `AI_MODEL=claude-sonnet-4.6`
 - `CLASSIFIER_MODEL=gpt-4.1`
+
+Mastra example:
+
+- `AI_PROVIDER=mastra`
+- `AI_MODEL=openai/gpt-4.1`
+- `CLASSIFIER_MODEL=openai/gpt-4.1`
+- `OPENAI_API_KEY=...`
 
 Backward compatibility:
 
@@ -53,6 +69,15 @@ Example:
 AI_PROVIDER=copilot
 AI_MODEL=claude-sonnet-4.6
 CLASSIFIER_MODEL=gpt-4.1
+```
+
+Mastra example:
+
+```bash
+AI_PROVIDER=mastra
+AI_MODEL=openai/gpt-4.1
+CLASSIFIER_MODEL=openai/gpt-4.1
+OPENAI_API_KEY=your-openai-key
 ```
 
 ### 3. Start Max
@@ -114,7 +139,10 @@ From Telegram or the TUI, just send natural language:
 
 ## How it Works
 
-Max runs a persistent **orchestrator Copilot session** — an always-on AI brain that receives your messages and decides how to handle them. For coding tasks, it spawns **worker Copilot sessions** in specific directories. For simple questions, it answers directly.
+Max runs a persistent **orchestrator session** — an always-on AI brain that receives your messages and decides how to handle them. For coding tasks, it spawns **worker sessions** in specific directories. For simple questions, it answers directly.
+
+- With **Copilot**, the orchestrator and workers use the Copilot SDK / Copilot CLI stack.
+- With **Mastra**, the orchestrator uses a Mastra agent and workers get a Mastra workspace with local filesystem and sandbox command execution.
 
 You can talk to Max from:
 - **Telegram** — remote access from your phone (authenticated by user ID)
@@ -125,16 +153,21 @@ You can talk to Max from:
 ```
 Telegram ──→ Max Daemon ←── TUI
                 │
-          Orchestrator Session (Copilot SDK)
+                   Orchestrator Session (Copilot or Mastra)
                 │
       ┌─────────┼─────────┐
    Worker 1  Worker 2  Worker N
 ```
 
-- **Daemon** (`max start`) — persistent service running Copilot SDK + Telegram bot + HTTP API
+- **Daemon** (`max start`) — persistent service running the selected AI runtime + Telegram bot + HTTP API
 - **TUI** (`max tui`) — lightweight terminal client connecting to the daemon
-- **Orchestrator** — long-running Copilot session with custom tools for session management
-- **Workers** — child Copilot sessions for specific coding tasks
+- **Orchestrator** — long-running runtime session with custom tools for session management
+- **Workers** — child runtime sessions for specific coding tasks
+
+### Provider notes
+
+- **Copilot** keeps support for listing and attaching to other Copilot CLI sessions on the machine.
+- **Mastra** requires Node.js `22.13.0+` and model provider credentials such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, depending on the model you choose.
 
 ## Development
 
@@ -143,6 +176,8 @@ Telegram ──→ Max Daemon ←── TUI
 git clone https://github.com/TheSethRose/max.git
 cd max
 npm install
+
+# Requires Node.js 22.13.0+
 
 # Watch mode
 npm run dev

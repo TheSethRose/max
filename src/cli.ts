@@ -18,7 +18,7 @@ function getVersion(): string {
 function printHelp(): void {
   const version = getVersion();
   console.log(`
-max v${version} — AI orchestrator powered by Copilot SDK
+max v${version} — AI orchestrator with Copilot and Mastra runtimes
 
 Usage:
   max <command>
@@ -37,7 +37,7 @@ Examples:
   max start           Start the daemon
   max start --self-edit  Start with self-edit enabled
   max tui             Open the terminal client
-  max setup           Configure Telegram token and settings
+  max setup           Configure Telegram, runtime provider, and settings
 `.trim());
 }
 

@@ -2,8 +2,17 @@ import * as readline from "readline";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { ensureMaxHome, ENV_PATH, MAX_HOME } from "./paths.js";
 import { getClient, stopClient } from "./ai/runtime.js";
-import { DEFAULT_AI_MODEL, DEFAULT_CLASSIFIER_MODEL, DEFAULT_PROVIDER } from "./config.js";
-import { SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
+import {
+  DEFAULT_AI_MODEL,
+  DEFAULT_CLASSIFIER_MODEL,
+  DEFAULT_PROVIDER,
+  DEFAULT_MASTRA_CLASSIFIER_MODEL,
+  DEFAULT_MASTRA_MODEL,
+  getDefaultAiModel,
+  getDefaultClassifierModel,
+} from "./config.js";
+import { normalizeAiProviderName, SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
+import { inferMastraApiKeyEnv, listMastraModels } from "./providers/mastra/runtime.js";
 
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
@@ -12,7 +21,7 @@ const YELLOW = "\x1b[33m";
 const CYAN = "\x1b[36m";
 const RESET = "\x1b[0m";
 
-const FALLBACK_MODELS = [
+const FALLBACK_COPILOT_MODELS = [
   { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6", desc: "Fast, great for most tasks" },
   { id: "gpt-5.1", label: "GPT-5.1", desc: "OpenAI's fast model" },
   { id: "gpt-4.1", label: "GPT-4.1", desc: "Free included model" },
@@ -24,6 +33,11 @@ const PROVIDER_METADATA: Record<AIProviderName, { label: string; desc: string; l
     desc: "Default built-in provider using the Copilot CLI and SDK",
     loginCommand: "copilot login",
   },
+  mastra: {
+    label: "Mastra",
+    desc: "Mastra agent runtime with provider/model strings and workspace-backed coding workers",
+    loginCommand: "Set the required provider API key in ~/.max/.env",
+  },
 };
 
 const PROVIDER_OPTIONS = SUPPORTED_AI_PROVIDERS.map((provider) => ({
@@ -32,7 +46,9 @@ const PROVIDER_OPTIONS = SUPPORTED_AI_PROVIDERS.map((provider) => ({
   desc: PROVIDER_METADATA[provider].desc,
 }));
 
-async function fetchModels(provider: AIProviderName): Promise<{ id: string; label: string; desc: string }[]> {
+async function fetchModels(
+  provider: AIProviderName,
+): Promise<{ id: string; label: string; desc: string }[]> {
   switch (provider) {
     case "copilot":
       try {
@@ -51,6 +67,14 @@ async function fetchModels(provider: AIProviderName): Promise<{ id: string; labe
       } finally {
         try { await stopClient(); } catch { /* best-effort */ }
       }
+    case "mastra":
+      return listMastraModels().map((model) => ({
+        id: model.id,
+        label: model.name,
+        desc: inferMastraApiKeyEnv(model.id)
+          ? `Requires ${inferMastraApiKeyEnv(model.id)}`
+          : "Provider/model string supported by Mastra",
+      }));
   }
 }
 
@@ -64,6 +88,24 @@ async function askRequired(rl: readline.Interface, prompt: string): Promise<stri
     if (answer) return answer;
     console.log(`${YELLOW}  This field is required. Please enter a value.${RESET}`);
   }
+}
+
+async function askRequiredOrKeepCurrent(
+  rl: readline.Interface,
+  prompt: string,
+  currentValue?: string,
+  currentHint?: string,
+): Promise<string> {
+  while (true) {
+    const answer = (await ask(rl, prompt)).trim();
+    if (answer) return answer;
+    if (currentValue) return currentValue;
+    console.log(currentHint || `${YELLOW}  This field is required. Please enter a value.${RESET}`);
+  }
+}
+
+function sanitizeEnvVarName(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_");
 }
 
 async function askYesNo(rl: readline.Interface, question: string, defaultYes = false): Promise<boolean> {
@@ -123,9 +165,9 @@ ${BOLD}╔═══════════════════════�
   console.log();
   console.log(`${CYAN}What Max can do out of the box:${RESET}`);
   console.log(`  • Have conversations and answer questions`);
-  console.log(`  • Spin up Copilot CLI sessions to code, debug, and run commands`);
+  console.log(`  • Spin up coding workers to code, debug, and run commands`);
   console.log(`  • Manage multiple background tasks simultaneously`);
-  console.log(`  • See and attach to any Copilot session on your machine`);
+  console.log(`  • See and attach to Copilot sessions on your machine when using Copilot`);
   console.log();
   console.log(`${CYAN}Skills — teach Max anything:${RESET}`);
   console.log(`  Max has a skill system that lets him learn new capabilities. There's`);
@@ -275,14 +317,18 @@ ${BOLD}╔═══════════════════════�
   console.log(`Choose which AI runtime provider Max should use.`);
   console.log(`${DIM}The selected provider is written to ${ENV_PATH}.${RESET}\n`);
 
-  const currentProviderRaw = (existing.AI_PROVIDER || DEFAULT_PROVIDER).trim();
-  const currentProvider = SUPPORTED_AI_PROVIDERS.includes(currentProviderRaw as AIProviderName)
-    ? (currentProviderRaw as AIProviderName)
-    : DEFAULT_PROVIDER;
+  const currentProvider = normalizeAiProviderName(existing.AI_PROVIDER) || DEFAULT_PROVIDER;
   const provider = await askPicker(rl, "Choose a provider:", PROVIDER_OPTIONS, currentProvider);
   const providerLabel = PROVIDER_METADATA[provider].label;
 
   console.log(`\n${GREEN}  ✓ Using ${providerLabel}${RESET}\n`);
+
+  if (provider === "mastra") {
+    console.log(`${BOLD}━━━ Mastra Configuration ━━━${RESET}\n`);
+    console.log(`Mastra uses ${BOLD}provider/model${RESET} identifiers like ${CYAN}openai/gpt-4.1${RESET} or ${CYAN}anthropic/claude-4-5-sonnet${RESET}.`);
+    console.log(`For coding workers, Mastra gets a local workspace with filesystem and command execution.`);
+    console.log(`${DIM}You'll choose a model next, then Max will offer to save the matching provider API key env var.${RESET}\n`);
+  }
 
   // ── Model picker ─────────────────────────────────────────
   console.log(`\n${BOLD}━━━ Default Model ━━━${RESET}\n`);
@@ -291,28 +337,125 @@ ${BOLD}╔═══════════════════════�
   let models = await fetchModels(provider);
   if (models.length === 0) {
     console.log(`${YELLOW}  Could not fetch models for ${providerLabel}.${RESET}`);
-    console.log(`${DIM}  Showing a curated list — you can switch anytime after setup.${RESET}\n`);
-    models = FALLBACK_MODELS;
+    if (provider === "mastra") {
+      console.log(`${DIM}  Enter a provider/model ID manually — you can switch anytime after setup.${RESET}\n`);
+    } else {
+      console.log(`${DIM}  Showing a curated list — you can switch anytime after setup.${RESET}\n`);
+      models = FALLBACK_COPILOT_MODELS;
+    }
   } else {
     console.log(`${GREEN}  ✓ Found ${models.length} models${RESET}\n`);
   }
 
   console.log(`${DIM}You can switch models anytime by telling Max "switch to gpt-4.1"${RESET}\n`);
 
-  const currentModel = existing.AI_MODEL || existing.COPILOT_MODEL || DEFAULT_AI_MODEL;
-  const model = await askPicker(rl, "Choose a default model:", models, currentModel);
+  const defaultModel = getDefaultAiModel(provider);
+  const currentModel = existing.AI_MODEL || existing.COPILOT_MODEL || defaultModel;
+  let model: string;
+  const useCustomMastraModel = provider === "mastra"
+    ? await askYesNo(
+        rl,
+        "Would you like to enter a custom provider/model ID (for example minimax-coding-plan/MiniMax-M2.5)?",
+        currentModel.includes("/") && !models.some((candidate) => candidate.id === currentModel),
+      )
+    : false;
+
+  if (provider === "mastra" && useCustomMastraModel) {
+    model = await askRequiredOrKeepCurrent(
+      rl,
+      `  Custom provider/model ID${currentModel ? ` ${DIM}(Enter to keep ${currentModel})${RESET}` : ""}: `,
+      currentModel,
+      `${YELLOW}  Enter a provider/model ID such as openai/gpt-4.1 or minimax-coding-plan/MiniMax-M2.5.${RESET}`,
+    );
+  } else {
+    model = models.length > 0
+      ? await askPicker(rl, "Choose a default model:", models, currentModel)
+      : await askRequiredOrKeepCurrent(
+          rl,
+          `  Model ID${currentModel ? ` ${DIM}(Enter to keep ${currentModel})${RESET}` : ""}: `,
+          currentModel,
+        );
+  }
   const modelLabel = models.find((m) => m.id === model)?.label || model;
   console.log(`\n${GREEN}  ✓ Using ${modelLabel}${RESET}\n`);
 
+  let mastraApiKeyEnv: string | undefined;
+  let mastraApiKeyValue: string | undefined;
+  if (provider === "mastra") {
+    mastraApiKeyEnv = inferMastraApiKeyEnv(model);
+    if (mastraApiKeyEnv) {
+      const currentApiKey = existing[mastraApiKeyEnv] || "";
+      console.log(`${DIM}Mastra will use ${mastraApiKeyEnv} for ${model}.${RESET}`);
+      mastraApiKeyValue = await askRequiredOrKeepCurrent(
+        rl,
+        `  ${mastraApiKeyEnv}${currentApiKey ? ` ${DIM}(Enter to keep current saved key)${RESET}` : ""}: `,
+        currentApiKey,
+        `${YELLOW}  ${mastraApiKeyEnv} is required for the selected model.${RESET}`,
+      );
+      console.log(`\n${GREEN}  ✓ ${mastraApiKeyEnv} saved${RESET}\n`);
+    } else {
+      console.log(`${YELLOW}  Max couldn't infer the provider API key variable for '${model}'.${RESET}`);
+      const customApiKeyEnvRaw = (await ask(
+        rl,
+        `  Custom API key env var ${DIM}(optional, e.g. MINIMAX_API_KEY)${RESET}: `,
+      )).trim();
+      const customApiKeyEnv = sanitizeEnvVarName(customApiKeyEnvRaw);
+      if (customApiKeyEnv) {
+        mastraApiKeyEnv = customApiKeyEnv;
+        const currentApiKey = existing[mastraApiKeyEnv] || "";
+        mastraApiKeyValue = await askRequiredOrKeepCurrent(
+          rl,
+          `  ${mastraApiKeyEnv}${currentApiKey ? ` ${DIM}(Enter to keep current saved key)${RESET}` : ""}: `,
+          currentApiKey,
+          `${YELLOW}  ${mastraApiKeyEnv} is required for the selected model.${RESET}`,
+        );
+        console.log(`\n${GREEN}  ✓ ${mastraApiKeyEnv} saved${RESET}\n`);
+      } else {
+        console.log(`${DIM}  Make sure the required credentials are available in your environment before starting Max.${RESET}\n`);
+      }
+    }
+  }
+
   // ── Write config ─────────────────────────────────────────
-  const apiPort = existing.API_PORT || "7777";
-  const lines: string[] = [];
-  if (telegramToken) lines.push(`TELEGRAM_BOT_TOKEN=${telegramToken}`);
-  if (userId) lines.push(`AUTHORIZED_USER_ID=${userId}`);
-  lines.push(`API_PORT=${apiPort}`);
-  lines.push(`AI_PROVIDER=${provider}`);
-  lines.push(`AI_MODEL=${model}`);
-  lines.push(`CLASSIFIER_MODEL=${existing.CLASSIFIER_MODEL || DEFAULT_CLASSIFIER_MODEL}`);
+  const updatedEnv: Record<string, string> = { ...existing };
+  delete updatedEnv.MAESTRA_BASE_URL;
+  delete updatedEnv.MAESTRA_API_KEY;
+  if (telegramToken) updatedEnv.TELEGRAM_BOT_TOKEN = telegramToken;
+  if (userId) updatedEnv.AUTHORIZED_USER_ID = userId;
+  updatedEnv.API_PORT = existing.API_PORT || "7777";
+  updatedEnv.AI_PROVIDER = provider;
+  updatedEnv.AI_MODEL = model;
+  const existingClassifier = existing.CLASSIFIER_MODEL;
+  updatedEnv.CLASSIFIER_MODEL = provider === "mastra"
+    ? (existingClassifier && existingClassifier.includes("/") ? existingClassifier : model)
+    : existingClassifier || DEFAULT_CLASSIFIER_MODEL;
+  if (provider === "mastra" && mastraApiKeyEnv && mastraApiKeyValue) {
+    updatedEnv[mastraApiKeyEnv] = mastraApiKeyValue;
+  }
+
+  const preferredOrder = [
+    "TELEGRAM_BOT_TOKEN",
+    "AUTHORIZED_USER_ID",
+    "API_PORT",
+    "AI_PROVIDER",
+    "AI_MODEL",
+    "CLASSIFIER_MODEL",
+    "WORKER_TIMEOUT",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "MINIMAX_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "COPILOT_MODEL",
+  ];
+  const lines = [
+    ...preferredOrder.filter((key) => updatedEnv[key]).map((key) => `${key}=${updatedEnv[key]}`),
+    ...Object.keys(updatedEnv)
+      .filter((key) => !preferredOrder.includes(key) && updatedEnv[key])
+      .sort()
+      .map((key) => `${key}=${updatedEnv[key]}`),
+  ];
 
   writeFileSync(ENV_PATH, lines.join("\n") + "\n");
 
@@ -323,8 +466,11 @@ ${DIM}Config saved to ${ENV_PATH}${RESET}
 
 ${BOLD}Get started:${RESET}
 
-  ${CYAN}1.${RESET} Make sure ${providerLabel} is authenticated:
-     ${BOLD}${PROVIDER_METADATA[provider].loginCommand}${RESET}
+  ${CYAN}1.${RESET} ${provider === "copilot"
+    ? `Make sure ${providerLabel} is authenticated:\n     ${BOLD}${PROVIDER_METADATA[provider].loginCommand}${RESET}`
+    : mastraApiKeyEnv
+      ? `Confirm ${BOLD}${mastraApiKeyEnv}${RESET} is set ${DIM}(saved in ${ENV_PATH} if you entered it above)${RESET}`
+      : `Confirm your chosen provider credentials are available to Mastra in the environment`}
 
   ${CYAN}2.${RESET} Start Max:
      ${BOLD}max start${RESET}

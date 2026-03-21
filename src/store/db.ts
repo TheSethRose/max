@@ -13,6 +13,7 @@ export function getDb(): Database.Database {
       CREATE TABLE IF NOT EXISTS worker_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE NOT NULL,
+        session_id TEXT,
         copilot_session_id TEXT,
         working_dir TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'idle',
@@ -64,6 +65,15 @@ export function getDb(): Database.Database {
       `);
       db.exec(`INSERT INTO conversation_log (role, content, source, ts) SELECT role, content, source, ts FROM conversation_log_old`);
       db.exec(`DROP TABLE conversation_log_old`);
+    }
+    const workerSessionColumns = db.prepare(`PRAGMA table_info(worker_sessions)`).all() as { name: string }[];
+    const hasSessionId = workerSessionColumns.some((column) => column.name === "session_id");
+    if (!hasSessionId) {
+      db.exec(`ALTER TABLE worker_sessions ADD COLUMN session_id TEXT`);
+    }
+    const hasLegacyCopilotSessionId = workerSessionColumns.some((column) => column.name === "copilot_session_id");
+    if (hasLegacyCopilotSessionId) {
+      db.exec(`UPDATE worker_sessions SET session_id = COALESCE(session_id, copilot_session_id)`);
     }
     // Prune conversation log at startup
     db.prepare(`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`).run();

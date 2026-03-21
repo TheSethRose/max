@@ -1,6 +1,7 @@
 import { getState, setState } from "../store/db.js";
 import { classifyWithLLM } from "./classifier.js";
 import type { AIClient } from "../ai/types.js";
+import { config } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,25 +34,49 @@ export interface RouteResult {
 // Default configuration
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CONFIG: RouterConfig = {
-  enabled: false,
-  tierModels: {
-    fast: "gpt-4.1",
-    standard: "claude-sonnet-4.6",
-    premium: "claude-opus-4.6",
-  },
-  overrides: [
-    {
-      name: "design",
-      keywords: [
-        "design", "ui", "ux", "css", "layout", "styling", "visual",
-        "mockup", "wireframe", "frontend design", "tailwind", "responsive",
+function getDefaultConfig(): RouterConfig {
+  if (config.aiProvider === "mastra") {
+    return {
+      enabled: false,
+      tierModels: {
+        fast: "openai/gpt-4.1",
+        standard: "anthropic/claude-4-5-sonnet",
+        premium: "openai/gpt-5",
+      },
+      overrides: [
+        {
+          name: "design",
+          keywords: [
+            "design", "ui", "ux", "css", "layout", "styling", "visual",
+            "mockup", "wireframe", "frontend design", "tailwind", "responsive",
+          ],
+          model: "openai/gpt-5",
+        },
       ],
-      model: "claude-opus-4.6",
+      cooldownMessages: 2,
+    };
+  }
+
+  return {
+    enabled: false,
+    tierModels: {
+      fast: "gpt-4.1",
+      standard: "claude-sonnet-4.6",
+      premium: "claude-opus-4.6",
     },
-  ],
-  cooldownMessages: 2,
-};
+    overrides: [
+      {
+        name: "design",
+        keywords: [
+          "design", "ui", "ux", "css", "layout", "styling", "visual",
+          "mockup", "wireframe", "frontend design", "tailwind", "responsive",
+        ],
+        model: "claude-opus-4.6",
+      },
+    ],
+    cooldownMessages: 2,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -89,15 +114,25 @@ function wordMatch(text: string, keyword: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function getRouterConfig(): RouterConfig {
+  const defaults = getDefaultConfig();
   const stored = getState("router_config");
   if (stored) {
     try {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+      const parsed = JSON.parse(stored) as Partial<RouterConfig>;
+      return {
+        ...defaults,
+        ...parsed,
+        tierModels: {
+          ...defaults.tierModels,
+          ...(parsed.tierModels ?? {}),
+        },
+        overrides: parsed.overrides ?? defaults.overrides,
+      };
     } catch {
-      return { ...DEFAULT_CONFIG };
+      return { ...defaults };
     }
   }
-  return { ...DEFAULT_CONFIG };
+  return { ...defaults };
 }
 
 export function updateRouterConfig(partial: Partial<RouterConfig>): RouterConfig {

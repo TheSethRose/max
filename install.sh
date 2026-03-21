@@ -36,13 +36,12 @@ fi
 # Check Node.js
 if ! command -v node &>/dev/null; then
   error "✗ Node.js is required but not installed."
-  echo "  Install it from https://nodejs.org (v18 or later)"
+  echo "  Install it from https://nodejs.org (v22.13.0 or later)"
   exit 1
 fi
 
-NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-if [ "$NODE_VERSION" -lt 18 ]; then
-  error "✗ Node.js v18+ is required (found $(node -v))"
+if ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && (minor > 13 || (minor === 13 && patch >= 0))) ? 0 : 1)'; then
+  error "✗ Node.js v22.13.0+ is required (found $(node -v))"
   echo "  Update from https://nodejs.org"
   exit 1
 fi
@@ -79,7 +78,7 @@ if [ "$DEV_MODE" = true ]; then
   npm run build
   echo ""
   info "Running setup from local build..."
-  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the current default.${RESET}"
+  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the default, and Mastra is also available.${RESET}"
   echo ""
   node dist/setup.js < /dev/tty
 else
@@ -89,7 +88,7 @@ else
   success "✅ Max installed successfully!"
   echo ""
   info "Let's get Max configured..."
-  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the current default.${RESET}"
+  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the default, and Mastra is also available.${RESET}"
   echo ""
   max setup < /dev/tty
 fi
