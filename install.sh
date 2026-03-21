@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Max installer — https://github.com/burkeholland/max
-# Usage: curl -fsSL https://raw.githubusercontent.com/burkeholland/max/main/install.sh | bash
+# Max installer — https://github.com/TheSethRose/max
+# Usage: curl -fsSL https://raw.githubusercontent.com/TheSethRose/max/main/install.sh | bash
 # Dev:   ./install.sh --dev  (skips npm install, runs setup from local source)
 
 DEV_MODE=false

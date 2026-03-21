@@ -32,11 +32,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/burkeholland/max.git"
+    "url": "https://github.com/TheSethRose/max.git"
   },
-  "homepage": "https://github.com/burkeholland/max#readme",
+  "homepage": "https://github.com/TheSethRose/max#readme",
   "bugs": {
-    "url": "https://github.com/burkeholland/max/issues"
+    "url": "https://github.com/TheSethRose/max/issues"
   },
   "type": "module",
   "dependencies": {

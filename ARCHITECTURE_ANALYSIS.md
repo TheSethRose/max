@@ -83,7 +83,7 @@ src/
 
 ### install.sh Workflow:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/burkeholland/max/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TheSethRose/max/main/install.sh | bash
 ```
 
 1. **Prerequisites Check**:

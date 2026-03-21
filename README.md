@@ -7,7 +7,7 @@ The runtime is now **provider-configurable via environment variables**, with **G
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/burkeholland/max/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TheSethRose/max/main/install.sh | bash
 ```
 
 Or install directly with npm:
@@ -140,7 +140,7 @@ Telegram ──→ Max Daemon ←── TUI
 
 ```bash
 # Clone and install
-git clone https://github.com/burkeholland/max.git
+git clone https://github.com/TheSethRose/max.git
 cd max
 npm install
 
