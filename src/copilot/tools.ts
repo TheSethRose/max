@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { approveAll, defineTool, type CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
+import type { AIClient, AISession, AIToolDefinition } from "../ai/types.js";
+import { defineAiTool } from "../ai/types.js";
 import { getDb, addMemory, searchMemories, removeMemory } from "../store/db.js";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, sep, resolve } from "path";
@@ -35,7 +36,7 @@ const MAX_CONCURRENT_WORKERS = 5;
 
 export interface WorkerInfo {
   name: string;
-  session: CopilotSession;
+  session: AISession;
   workingDir: string;
   status: "idle" | "running" | "error";
   lastOutput?: string;
@@ -46,14 +47,14 @@ export interface WorkerInfo {
 }
 
 export interface ToolDeps {
-  client: CopilotClient;
+  client: AIClient;
   workers: Map<string, WorkerInfo>;
   onWorkerComplete: (name: string, result: string) => void;
 }
 
-export function createTools(deps: ToolDeps): Tool<any>[] {
+export function createTools(deps: ToolDeps): AIToolDefinition[] {
   return [
-    defineTool("create_worker_session", {
+    defineAiTool("create_worker_session", {
       description:
         "Create a new Copilot CLI worker session in a specific directory. " +
         "Use for coding tasks, debugging, file operations. " +
@@ -83,10 +84,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
         }
 
         const session = await deps.client.createSession({
-          model: config.copilotModel,
+          model: config.aiModel,
           configDir: SESSIONS_DIR,
           workingDirectory: args.working_dir,
-          onPermissionRequest: approveAll,
         });
 
         const worker: WorkerInfo = {
@@ -117,7 +117,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
           session.sendAndWait({
             prompt: `Working directory: ${args.working_dir}\n\n${args.initial_prompt}`,
           }, timeoutMs).then((result) => {
-            worker.lastOutput = result?.data?.content || "No response";
+            worker.lastOutput = result?.content || "No response";
             deps.onWorkerComplete(args.name, worker.lastOutput);
           }).catch((err) => {
             const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
@@ -137,7 +137,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("send_to_worker", {
+    defineAiTool("send_to_worker", {
       description:
         "Send a prompt to an existing worker session and wait for its response. " +
         "Use for follow-up instructions or questions about ongoing work.",
@@ -164,7 +164,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
         const timeoutMs = config.workerTimeoutMs;
         // Non-blocking: dispatch work and return immediately
         worker.session.sendAndWait({ prompt: args.prompt }, timeoutMs).then((result) => {
-          worker.lastOutput = result?.data?.content || "No response";
+          worker.lastOutput = result?.content || "No response";
           deps.onWorkerComplete(args.name, worker.lastOutput);
         }).catch((err) => {
           const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
@@ -181,7 +181,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("list_sessions", {
+    defineAiTool("list_sessions", {
       description: "List all active worker sessions with their name, status, and working directory.",
       parameters: z.object({}),
       handler: async () => {
@@ -195,7 +195,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("check_session_status", {
+    defineAiTool("check_session_status", {
       description: "Get detailed status of a specific worker session, including its last output.",
       parameters: z.object({
         name: z.string().describe("Name of the worker session"),
@@ -212,7 +212,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("kill_session", {
+    defineAiTool("kill_session", {
       description: "Terminate a worker session and free its resources.",
       parameters: z.object({
         name: z.string().describe("Name of the worker session to kill"),
@@ -236,7 +236,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("list_machine_sessions", {
+    defineAiTool("list_machine_sessions", {
       description:
         "List ALL Copilot CLI sessions on this machine — including sessions started from VS Code, " +
         "the terminal, or other tools. Shows session ID, summary, working directory. " +
@@ -295,7 +295,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("attach_machine_session", {
+    defineAiTool("attach_machine_session", {
       description:
         "Attach to an existing Copilot CLI session on this machine (e.g. one started from VS Code or terminal). " +
         "Resumes the session and adds it as a managed worker so you can send prompts to it.",
@@ -310,8 +310,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 
         try {
           const session = await deps.client.resumeSession(args.session_id, {
-            model: config.copilotModel,
-            onPermissionRequest: approveAll,
+            model: config.aiModel,
           });
 
           const worker: WorkerInfo = {
@@ -337,7 +336,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("list_skills", {
+    defineAiTool("list_skills", {
       description:
         "List all available skills that Max knows. Skills are instruction documents that teach Max " +
         "how to use external tools and services (e.g. Gmail, browser automation, YouTube transcripts). " +
@@ -355,7 +354,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("learn_skill", {
+    defineAiTool("learn_skill", {
       description:
         "Teach Max a new skill by creating a SKILL.md instruction file. Use this when the user asks Max " +
         "to do something it doesn't know how to do yet (e.g. 'check my email', 'search the web'). " +
@@ -377,7 +376,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("uninstall_skill", {
+    defineAiTool("uninstall_skill", {
       description:
         "Remove a skill from Max's local skills directory (~/.max/skills/). " +
         "The skill will no longer be available on the next message. " +
@@ -391,9 +390,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("list_models", {
+    defineAiTool("list_models", {
       description:
-        "List all available Copilot models. Shows model id, name, and billing tier. " +
+        "List all available runtime models for the active provider. Shows model id, name, and billing tier. " +
         "Marks the currently active model. Use when the user asks what models are available " +
         "or wants to know which model is in use.",
       parameters: z.object({}),
@@ -403,10 +402,10 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
           if (models.length === 0) {
             return "No models available.";
           }
-          const current = config.copilotModel;
+          const current = config.aiModel;
           const lines = models.map((m) => {
             const active = m.id === current ? " ← active" : "";
-            const billing = m.billing ? ` (${m.billing.multiplier}x)` : "";
+            const billing = m.billingMultiplier !== undefined ? ` (${m.billingMultiplier}x)` : "";
             return `• ${m.id}${billing}${active}`;
           });
           return `Available models (${models.length}):\n${lines.join("\n")}\n\nCurrent: ${current}`;
@@ -417,9 +416,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("switch_model", {
+    defineAiTool("switch_model", {
       description:
-        "Switch the Copilot model Max uses for conversations. Takes effect on the next message. " +
+        "Switch the active provider model Max uses for conversations. Takes effect on the next message. " +
         "The change is persisted across restarts. Use when the user asks to change or switch models.",
       parameters: z.object({
         model_id: z.string().describe("The model id to switch to (from list_models)"),
@@ -438,8 +437,8 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
             return `Model '${args.model_id}' not found.${hint}`;
           }
 
-          const previous = config.copilotModel;
-          config.copilotModel = args.model_id;
+          const previous = config.aiModel;
+          config.aiModel = args.model_id;
           persistModel(args.model_id);
 
           // Disable router when manually switching — user has explicit preference
@@ -456,7 +455,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("toggle_auto", {
+    defineAiTool("toggle_auto", {
       description:
         "Enable or disable automatic model routing (auto mode). When enabled, Max automatically picks " +
         "the best model (fast/standard/premium) for each message to save cost and optimize speed. " +
@@ -470,11 +469,11 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
           const tiers = updated.tierModels;
           return `Auto-routing enabled. Tier models:\n• fast: ${tiers.fast}\n• standard: ${tiers.standard}\n• premium: ${tiers.premium}\n\nMax will automatically pick the best model for each message.`;
         }
-        return `Auto-routing disabled. Using fixed model: ${config.copilotModel}`;
+        return `Auto-routing disabled. Using fixed model: ${config.aiModel}`;
       },
     }),
 
-    defineTool("remember", {
+    defineAiTool("remember", {
       description:
         "Save something to Max's long-term memory. Use when the user says 'remember that...', " +
         "states a preference, shares a fact about themselves, or mentions something important " +
@@ -492,7 +491,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("recall", {
+    defineAiTool("recall", {
       description:
         "Search Max's long-term memory for stored facts, preferences, or information. " +
         "Use when you need to look up something the user told you before, or when the user " +
@@ -514,7 +513,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("forget", {
+    defineAiTool("forget", {
       description:
         "Remove a specific memory from Max's long-term storage. Use when the user asks " +
         "to forget something, or when a memory is outdated/incorrect. Requires the memory ID " +
@@ -530,7 +529,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
       },
     }),
 
-    defineTool("restart_max", {
+    defineAiTool("restart_max", {
       description:
         "Restart the Max daemon process. Use when the user asks Max to restart himself, " +
         "or when a restart is needed to pick up configuration changes. " +

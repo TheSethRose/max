@@ -2,6 +2,8 @@
 
 AI orchestrator powered by [Copilot SDK](https://github.com/github/copilot-sdk) — control multiple Copilot CLI sessions from Telegram or a local terminal.
 
+The runtime is now **provider-configurable via environment variables**, with **GitHub Copilot remaining the default and only built-in provider** for now.
+
 ## Install
 
 ```bash
@@ -28,6 +30,29 @@ This creates `~/.max/` and walks you through configuration (Telegram bot token, 
 
 ```bash
 copilot login
+```
+
+### Runtime configuration
+
+Max reads `~/.max/.env` and falls back to a project-local `.env` for development.
+
+Supported variables:
+
+- `AI_PROVIDER=copilot`
+- `AI_MODEL=claude-sonnet-4.6`
+- `CLASSIFIER_MODEL=gpt-4.1`
+
+Backward compatibility:
+
+- If `AI_MODEL` is unset and `COPILOT_MODEL` is set, Max will use `COPILOT_MODEL`.
+- If `AI_PROVIDER` is unset, Max defaults to `copilot`.
+
+Example:
+
+```bash
+AI_PROVIDER=copilot
+AI_MODEL=claude-sonnet-4.6
+CLASSIFIER_MODEL=gpt-4.1
 ```
 
 ### 3. Start Max

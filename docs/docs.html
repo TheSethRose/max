@@ -647,11 +647,11 @@
 
 <h2 id="auto-mode">Auto Mode<span>.</span></h2>
 
-<p>Max has built-in automatic model routing that selects the best model for each message based on complexity. It's <strong>on by default</strong> — no configuration needed.</p>
+<p>Max has built-in automatic model routing that selects the best model for each message based on complexity. It's <strong>available but off by default</strong> until you enable it with <code>/auto</code>.</p>
 
 <h3>How it works</h3>
 
-<p>Every incoming message is classified by a lightweight GPT-4.1 classifier into one of three tiers:</p>
+<p>Every incoming message is classified by a lightweight classifier into one of three tiers. The classifier model is configurable via <code>CLASSIFIER_MODEL</code> (default: <code>gpt-4.1</code>).</p>
 
 <table class="env-table">
   <thead><tr><th>Tier</th><th>Model</th><th>Used for</th></tr></thead>
@@ -693,12 +693,17 @@
 <table class="env-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td>COPILOT_MODEL</td><td>claude-sonnet-4.6</td><td>Default LLM model for the orchestrator</td></tr>
+    <tr><td>AI_PROVIDER</td><td>copilot</td><td>AI runtime provider (Copilot is the current built-in option)</td></tr>
+    <tr><td>AI_MODEL</td><td>claude-sonnet-4.6</td><td>Default model for the orchestrator</td></tr>
+    <tr><td>CLASSIFIER_MODEL</td><td>gpt-4.1</td><td>Classifier model used for auto-routing decisions</td></tr>
     <tr><td>API_PORT</td><td>7777</td><td>HTTP API port (1–65535)</td></tr>
     <tr><td>TELEGRAM_BOT_TOKEN</td><td>—</td><td>Bot token from @BotFather (optional)</td></tr>
     <tr><td>AUTHORIZED_USER_ID</td><td>—</td><td>Your Telegram numeric user ID (required if using Telegram)</td></tr>
+    <tr><td>WORKER_TIMEOUT</td><td>600000</td><td>Worker timeout in milliseconds</td></tr>
   </tbody>
 </table>
+
+<p>Backward compatibility: if <code>AI_MODEL</code> is unset and <code>COPILOT_MODEL</code> is present, Max still honors <code>COPILOT_MODEL</code>.</p>
 
 
 <h2 id="telegram">Telegram Setup<span>.</span></h2>
@@ -727,7 +732,7 @@
 <p>Max is a Node.js daemon process built on the <a href="https://github.com/github/copilot-sdk">GitHub Copilot SDK</a>. Here's the architecture:</p>
 
 <ul>
-  <li><strong>Daemon</strong> (<code>max start</code>) — the main process. Starts the SDK client, orchestrator, HTTP API, and Telegram bot.</li>
+  <li><strong>Daemon</strong> (<code>max start</code>) — the main process. Starts the configured runtime client (Copilot today), orchestrator, HTTP API, and Telegram bot.</li>
   <li><strong>Orchestrator</strong> — a persistent Copilot session that receives all messages, decides what to do, and dispatches work. Runs in a single infinite session with automatic compaction.</li>
   <li><strong>Workers</strong> — full Copilot CLI sessions created on demand for coding tasks. Each runs in its own directory with full tool access.</li>
   <li><strong>HTTP API</strong> — Express server on port 7777. The TUI connects via SSE for streaming; slash commands hit REST endpoints.</li>

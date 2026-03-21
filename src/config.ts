@@ -2,6 +2,7 @@ import { config as loadEnv } from "dotenv";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "fs";
 import { ENV_PATH, ensureMaxHome } from "./paths.js";
+import { SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
 
 // Load from ~/.max/.env, fall back to cwd .env for dev
 loadEnv({ path: ENV_PATH });
@@ -11,6 +12,9 @@ const configSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   AUTHORIZED_USER_ID: z.string().min(1).optional(),
   API_PORT: z.string().optional(),
+  AI_PROVIDER: z.string().optional(),
+  AI_MODEL: z.string().optional(),
+  CLASSIFIER_MODEL: z.string().optional(),
   COPILOT_MODEL: z.string().optional(),
   WORKER_TIMEOUT: z.string().optional(),
 });
@@ -39,19 +43,31 @@ if (!Number.isInteger(parsedWorkerTimeout) || parsedWorkerTimeout <= 0) {
 }
 
 export const DEFAULT_MODEL = "claude-sonnet-4.6";
+export const DEFAULT_AI_MODEL = DEFAULT_MODEL;
+export const DEFAULT_PROVIDER: AIProviderName = "copilot";
+export const DEFAULT_CLASSIFIER_MODEL = "gpt-4.1";
 
-let _copilotModel = raw.COPILOT_MODEL || DEFAULT_MODEL;
+const parsedProvider = (raw.AI_PROVIDER || DEFAULT_PROVIDER).trim();
+if (!SUPPORTED_AI_PROVIDERS.includes(parsedProvider as AIProviderName)) {
+  throw new Error(
+    `AI_PROVIDER must be one of: ${SUPPORTED_AI_PROVIDERS.join(", ")}. Got: "${raw.AI_PROVIDER}"`,
+  );
+}
+
+let _aiModel = raw.AI_MODEL || raw.COPILOT_MODEL || DEFAULT_AI_MODEL;
 
 export const config = {
   telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
   authorizedUserId: parsedUserId,
   apiPort: parsedPort,
   workerTimeoutMs: parsedWorkerTimeout,
-  get copilotModel(): string {
-    return _copilotModel;
+  aiProvider: parsedProvider as AIProviderName,
+  classifierModel: raw.CLASSIFIER_MODEL || DEFAULT_CLASSIFIER_MODEL,
+  get aiModel(): string {
+    return _aiModel;
   },
-  set copilotModel(model: string) {
-    _copilotModel = model;
+  set aiModel(model: string) {
+    _aiModel = model;
   },
   get telegramEnabled(): boolean {
     return !!this.telegramBotToken && this.authorizedUserId !== undefined;
@@ -85,5 +101,5 @@ function persistEnvVar(key: string, value: string): void {
 
 /** Persist the current model choice to ~/.max/.env */
 export function persistModel(model: string): void {
-  persistEnvVar("COPILOT_MODEL", model);
+  persistEnvVar("AI_MODEL", model);
 }

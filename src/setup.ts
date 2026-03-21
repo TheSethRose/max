@@ -1,7 +1,9 @@
 import * as readline from "readline";
 import { existsSync, readFileSync, writeFileSync } from "fs";
-import { CopilotClient } from "@github/copilot-sdk";
 import { ensureMaxHome, ENV_PATH, MAX_HOME } from "./paths.js";
+import { getClient, stopClient } from "./ai/runtime.js";
+import { DEFAULT_AI_MODEL, DEFAULT_CLASSIFIER_MODEL, DEFAULT_PROVIDER } from "./config.js";
+import { SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
 
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
@@ -16,24 +18,39 @@ const FALLBACK_MODELS = [
   { id: "gpt-4.1", label: "GPT-4.1", desc: "Free included model" },
 ];
 
-async function fetchModels(): Promise<{ id: string; label: string; desc: string }[]> {
-  let client: CopilotClient | undefined;
-  try {
-    client = new CopilotClient({ autoStart: true });
-    await client.start();
-    const models = await client.listModels();
-    return models
-      .filter((m) => m.policy?.state === "enabled" && !m.name.includes("(Internal only)"))
-      .map((m) => {
-        const mult = m.billing?.multiplier;
-        const desc =
-          mult === 0 || mult === undefined ? "Included with Copilot" : `Premium (${mult}x)`;
-        return { id: m.id, label: m.name, desc };
-      });
-  } catch {
-    return [];
-  } finally {
-    try { await client?.stop(); } catch { /* best-effort */ }
+const PROVIDER_METADATA: Record<AIProviderName, { label: string; desc: string; loginCommand: string }> = {
+  copilot: {
+    label: "GitHub Copilot",
+    desc: "Default built-in provider using the Copilot CLI and SDK",
+    loginCommand: "copilot login",
+  },
+};
+
+const PROVIDER_OPTIONS = SUPPORTED_AI_PROVIDERS.map((provider) => ({
+  id: provider,
+  label: PROVIDER_METADATA[provider].label,
+  desc: PROVIDER_METADATA[provider].desc,
+}));
+
+async function fetchModels(provider: AIProviderName): Promise<{ id: string; label: string; desc: string }[]> {
+  switch (provider) {
+    case "copilot":
+      try {
+        const client = await getClient();
+        const models = await client.listModels();
+        return models
+          .filter((m) => m.enabled && !m.internalOnly)
+          .map((m) => {
+            const mult = m.billingMultiplier;
+            const desc =
+              mult === 0 || mult === undefined ? "Included with Copilot" : `Premium (${mult}x)`;
+            return { id: m.id, label: m.name, desc };
+          });
+      } catch {
+        return [];
+      } finally {
+        try { await stopClient(); } catch { /* best-effort */ }
+      }
   }
 }
 
@@ -56,7 +73,12 @@ async function askYesNo(rl: readline.Interface, question: string, defaultYes = f
   return answer === "y" || answer === "yes";
 }
 
-async function askPicker(rl: readline.Interface, label: string, options: { id: string; label: string; desc: string }[], defaultId: string): Promise<string> {
+async function askPicker<T extends string>(
+  rl: readline.Interface,
+  label: string,
+  options: { id: T; label: string; desc: string }[],
+  defaultId: T,
+): Promise<T> {
   console.log(`${BOLD}${label}${RESET}\n`);
   const defaultIdx = Math.max(0, options.findIndex((o) => o.id === defaultId));
   for (let i = 0; i < options.length; i++) {
@@ -248,13 +270,27 @@ ${BOLD}╔═══════════════════════�
     console.log(`\n${DIM}  Skipping Google. You can always set it up later with: max setup${RESET}\n`);
   }
 
+  // ── Provider picker ──────────────────────────────────────
+  console.log(`\n${BOLD}━━━ AI Provider ━━━${RESET}\n`);
+  console.log(`Choose which AI runtime provider Max should use.`);
+  console.log(`${DIM}The selected provider is written to ${ENV_PATH}.${RESET}\n`);
+
+  const currentProviderRaw = (existing.AI_PROVIDER || DEFAULT_PROVIDER).trim();
+  const currentProvider = SUPPORTED_AI_PROVIDERS.includes(currentProviderRaw as AIProviderName)
+    ? (currentProviderRaw as AIProviderName)
+    : DEFAULT_PROVIDER;
+  const provider = await askPicker(rl, "Choose a provider:", PROVIDER_OPTIONS, currentProvider);
+  const providerLabel = PROVIDER_METADATA[provider].label;
+
+  console.log(`\n${GREEN}  ✓ Using ${providerLabel}${RESET}\n`);
+
   // ── Model picker ─────────────────────────────────────────
   console.log(`\n${BOLD}━━━ Default Model ━━━${RESET}\n`);
-  console.log(`${DIM}Fetching available models from Copilot...${RESET}`);
+  console.log(`${DIM}Fetching available models from ${providerLabel}...${RESET}`);
 
-  let models = await fetchModels();
+  let models = await fetchModels(provider);
   if (models.length === 0) {
-    console.log(`${YELLOW}  Could not fetch models (Copilot CLI may not be authenticated yet).${RESET}`);
+    console.log(`${YELLOW}  Could not fetch models for ${providerLabel}.${RESET}`);
     console.log(`${DIM}  Showing a curated list — you can switch anytime after setup.${RESET}\n`);
     models = FALLBACK_MODELS;
   } else {
@@ -263,7 +299,7 @@ ${BOLD}╔═══════════════════════�
 
   console.log(`${DIM}You can switch models anytime by telling Max "switch to gpt-4.1"${RESET}\n`);
 
-  const currentModel = existing.COPILOT_MODEL || "claude-sonnet-4.6";
+  const currentModel = existing.AI_MODEL || existing.COPILOT_MODEL || DEFAULT_AI_MODEL;
   const model = await askPicker(rl, "Choose a default model:", models, currentModel);
   const modelLabel = models.find((m) => m.id === model)?.label || model;
   console.log(`\n${GREEN}  ✓ Using ${modelLabel}${RESET}\n`);
@@ -274,7 +310,9 @@ ${BOLD}╔═══════════════════════�
   if (telegramToken) lines.push(`TELEGRAM_BOT_TOKEN=${telegramToken}`);
   if (userId) lines.push(`AUTHORIZED_USER_ID=${userId}`);
   lines.push(`API_PORT=${apiPort}`);
-  lines.push(`COPILOT_MODEL=${model}`);
+  lines.push(`AI_PROVIDER=${provider}`);
+  lines.push(`AI_MODEL=${model}`);
+  lines.push(`CLASSIFIER_MODEL=${existing.CLASSIFIER_MODEL || DEFAULT_CLASSIFIER_MODEL}`);
 
   writeFileSync(ENV_PATH, lines.join("\n") + "\n");
 
@@ -285,8 +323,8 @@ ${DIM}Config saved to ${ENV_PATH}${RESET}
 
 ${BOLD}Get started:${RESET}
 
-  ${CYAN}1.${RESET} Make sure Copilot CLI is authenticated:
-     ${BOLD}copilot login${RESET}
+  ${CYAN}1.${RESET} Make sure ${providerLabel} is authenticated:
+     ${BOLD}${PROVIDER_METADATA[provider].loginCommand}${RESET}
 
   ${CYAN}2.${RESET} Start Max:
      ${BOLD}max start${RESET}

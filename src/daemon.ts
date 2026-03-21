@@ -1,4 +1,4 @@
-import { getClient, stopClient } from "./copilot/client.js";
+import { getClient, stopClient } from "./ai/runtime.js";
 import { initOrchestrator, setMessageLogger, setProactiveNotify, getWorkers } from "./copilot/orchestrator.js";
 import { startApiServer, broadcastToSSE } from "./api/server.js";
 import { createBot, startBot, stopBot, sendProactiveMessage } from "./telegram/bot.js";
@@ -29,10 +29,10 @@ async function main(): Promise<void> {
   getDb();
   console.log("[max] Database initialized");
 
-  // Start Copilot SDK client
-  console.log("[max] Starting Copilot SDK client...");
+  // Start AI runtime client
+  console.log(`[max] Starting ${config.aiProvider} runtime client...`);
   const client = await getClient();
-  console.log("[max] Copilot SDK client ready");
+  console.log(`[max] ${config.aiProvider} runtime client ready`);
 
   // Initialize orchestrator session
   console.log("[max] Creating orchestrator session...");

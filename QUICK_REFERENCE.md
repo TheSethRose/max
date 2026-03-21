@@ -2,7 +2,7 @@
 
 ## Project: AI Orchestrator Daemon for Developers
 
-**What it does**: Always-on personal AI assistant that runs on your machine, orchestrates multiple Copilot CLI sessions, learns skills, remembers context.
+**What it does**: Always-on personal AI assistant that runs on your machine, orchestrates coding workers, learns skills, remembers context.
 
 **~3,530 lines of TypeScript** | Runs 24/7 | Persists to ~/.max/
 
@@ -14,7 +14,7 @@
 |---------|---------|
 | `max start` | Start the daemon (Telegram bot + HTTP API + orchestrator) |
 | `max tui` | Connect to daemon via terminal UI |
-| `max setup` | Interactive configuration (Telegram, Google, model selection) |
+| `max setup` | Interactive configuration (provider, model, Telegram, Google) |
 | `max update` | Check and install updates |
 | `max help` | Show help |
 
@@ -27,7 +27,7 @@
 
 | Path | Purpose |
 |------|---------|
-| `~/.max/.env` | Config: TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID, API_PORT, COPILOT_MODEL, WORKER_TIMEOUT |
+| `~/.max/.env` | Config: TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID, API_PORT, AI_PROVIDER, AI_MODEL, CLASSIFIER_MODEL, WORKER_TIMEOUT |
 | `~/.max/max.db` | SQLite: worker sessions, conversation log, memories, app state |
 | `~/.max/sessions/` | Copilot SDK session storage (keeps history clean) |
 | `~/.max/skills/` | User-installed skills (SKILL.md + _meta.json) |
@@ -50,7 +50,7 @@ Input Sources:
   └─────────────────────┘
         ↓
   ┌─────────────────────┐
-  │  Orchestrator       │ (persistent Copilot session)
+      │  Orchestrator       │ (persistent session via configured provider)
   │  - Route model      │
   │  - Execute tools    │
   │  - Stream response  │
@@ -75,7 +75,7 @@ Input Sources:
 1. **CLI routes** → `daemon.ts`
 2. **Load config** from ~/.max/.env
 3. **Init SQLite** database
-4. **Start Copilot SDK client** (auto-starts if needed)
+4. **Start AI runtime client** (Copilot by default; auto-starts if needed)
 5. **Init orchestrator**:
    - Load MCP servers from ~/.copilot/mcp-config.json
    - Load skills from ~/.max/skills/, ~/.agents/skills/
@@ -192,7 +192,7 @@ Workers are **temporary Copilot CLI sessions** spawned on demand:
 - Recent conversation injected to recover context
 
 ### 3. Health Check Loop
-- Every 30s: checks if CopilotClient still connected
+- Every 30s: checks if the active AI runtime client is still connected
 - If disconnected: auto-reconnect
 - If reconnect fails: session becomes stale, recreated on next message
 
@@ -220,7 +220,7 @@ Workers are **temporary Copilot CLI sessions** spawned on demand:
 
 | Dependency | Purpose | Default Installed? |
 |------------|---------|-------------------|
-| **Copilot CLI** | AI models, session mgmt | ✓ Required |
+| **Copilot CLI** | Current built-in AI provider runtime, models, session mgmt | ✓ Required today |
 | **Telegram Bot API** | Remote messaging | ✗ Optional |
 | **gogcli** | Google services | ✗ Optional |
 | **skills.sh API** | Skill discovery | (online, optional) |
@@ -252,15 +252,20 @@ All routes require Bearer token from ~/.max/api-token (except /status).
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| POST | `/send` | Send message to orchestrator |
-| GET | `/events` | Server-sent events (SSE) stream |
-| GET | `/workers` | List active workers |
+| POST | `/message` | Send message to orchestrator |
+| GET | `/stream` | Server-sent events (SSE) stream |
+| GET | `/sessions` | List active workers |
 | GET | `/status` | Health check (no auth) |
-| GET | `/memories` | Query memories |
-| POST | `/memories` | Add memory |
+| POST | `/cancel` | Cancel the current in-flight message |
+| GET | `/model` | Show active model |
+| POST | `/model` | Switch active model |
+| GET | `/auto` | Show auto-routing config |
+| POST | `/auto` | Update auto-routing config |
+| GET | `/memory` | Query memories |
 | GET | `/skills` | List skills |
 | DELETE | `/skills/{slug}` | Remove skill |
 | POST | `/restart` | Restart daemon |
+| POST | `/send-photo` | Send a photo through Telegram |
 
 ---
 
@@ -293,7 +298,7 @@ All routes require Bearer token from ~/.max/api-token (except /status).
 | "Copilot CLI not found" | Install: `npm install -g @github/copilot` |
 | "Not authenticated" | Run: `copilot login` |
 | Telegram not working | Run: `max setup` and configure token + user ID |
-| Model unavailable | Verify `copilot listModels` includes configured model |
+| Model unavailable | Re-run `max setup` or switch to a model exposed by your configured provider |
 | Skills not found | Check ~/.max/skills/ and ~/.agents/skills/ have SKILL.md files |
 | Workers stuck | Check WORKER_TIMEOUT in ~/.max/.env |
 | Daemon crashed | Restart: `max start` (session resumes automatically) |

@@ -6,6 +6,7 @@ import { searchMemories } from "../store/db.js";
 import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { getRouterConfig, updateRouterConfig } from "../copilot/router.js";
+import { getClient } from "../ai/runtime.js";
 
 let bot: Bot | undefined;
 
@@ -53,7 +54,6 @@ export function createBot(): Bot {
     if (arg) {
       // Validate against available models before persisting
       try {
-        const { getClient } = await import("../copilot/client.js");
         const client = await getClient();
         const models = await client.listModels();
         const match = models.find((m) => m.id === arg);
@@ -68,12 +68,12 @@ export function createBot(): Bot {
       } catch {
         // If validation fails (client not ready), allow the switch — will fail on next message if wrong
       }
-      const previous = config.copilotModel;
-      config.copilotModel = arg;
+      const previous = config.aiModel;
+      config.aiModel = arg;
       persistModel(arg);
       await ctx.reply(`Model: ${previous} → ${arg}`);
     } else {
-      await ctx.reply(`Current model: ${config.copilotModel}`);
+      await ctx.reply(`Current model: ${config.aiModel}`);
     }
   });
   bot.command("memory", async (ctx) => {
@@ -117,7 +117,7 @@ export function createBot(): Bot {
     updateRouterConfig({ enabled: newState });
     const label = newState
       ? "⚡ Auto mode on"
-      : `Auto mode off · using ${config.copilotModel}`;
+      : `Auto mode off · using ${config.aiModel}`;
     await ctx.reply(label);
   });
 

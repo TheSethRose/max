@@ -59,7 +59,7 @@ echo -e "  ${GREEN}✓${RESET} npm $(npm -v)"
 if command -v copilot &>/dev/null; then
   echo -e "  ${GREEN}✓${RESET} Copilot CLI found"
 else
-  warn "  ⚠ Copilot CLI not found — you'll need it before starting Max"
+  warn "  ⚠ Copilot CLI not found — you'll need it if you choose GitHub Copilot during setup"
   echo -e "    ${DIM}Install: npm install -g @github/copilot${RESET}"
 fi
 
@@ -79,6 +79,7 @@ if [ "$DEV_MODE" = true ]; then
   npm run build
   echo ""
   info "Running setup from local build..."
+  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the current default.${RESET}"
   echo ""
   node dist/setup.js < /dev/tty
 else
@@ -88,6 +89,7 @@ else
   success "✅ Max installed successfully!"
   echo ""
   info "Let's get Max configured..."
+  echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the current default.${RESET}"
   echo ""
   max setup < /dev/tty
 fi

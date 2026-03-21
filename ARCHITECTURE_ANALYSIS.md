@@ -3,7 +3,7 @@
 ## Project Overview
 
 **Max** is an AI orchestrator daemon built on the GitHub Copilot SDK. It's a personal AI assistant for developers that runs 24/7 on a user's machine, providing:
-- **Always-on Copilot orchestrator** session that coordinates AI tasks
+- **Always-on orchestrator** session that runs on the configured AI provider (default: Copilot)
 - **Multiple interfaces**: Telegram (remote), TUI (local terminal), HTTP API (programmatic)
 - **Worker sessions**: Spawns child Copilot CLI sessions for coding tasks, debugging, file operations
 - **Skill system**: Learns and stores skills for external tools (Gmail, Google Calendar, CLI tools)
@@ -23,7 +23,10 @@ Telegram Bot ──→ ┌─────────────────┐
               ┌─ │ (HTTP API:7777) │ ←── API Clients
               │  │                 │
               │  │ Orchestrator    │
-              │  │ Session (Copilot)
+              │  │ Session         │
+              │  │ (AI provider:   │
+              │  │  Copilot by     │
+              │  │  default)       │
               │  └────────┬────────┘
               │           │
               └───────────┼────────────────────┐
@@ -42,15 +45,23 @@ src/
 ├── paths.ts            (Path constants for ~/.max/)
 ├── update.ts           (Update checking)
 │
-├── copilot/            (Copilot SDK integration)
+├── ai/                 (Provider-neutral runtime contracts + selector)
+│  ├── runtime.ts       (Dispatch to configured AI provider)
+│  └── types.ts         (AIClient/AISession abstractions)
+│
+├── copilot/            (Orchestrator logic, routing, skills, provider-facing helpers)
 │  ├── orchestrator.ts  (Persistent AI session, message queueing)
-│  ├── client.ts        (CopilotClient singleton with auto-restart)
+│  ├── client.ts        (Compatibility re-export to active runtime client)
 │  ├── tools.ts         (Worker session tools, skills, memory tools)
 │  ├── system-message.ts (System prompt for orchestrator)
 │  ├── router.ts        (Intelligent model selection)
 │  ├── classifier.ts    (LLM-based request classification)
 │  ├── skills.ts        (Skill discovery, installation, management)
 │  └── mcp-config.ts    (MCP server loading from ~/.copilot/mcp-config.json)
+│
+├── providers/          (Concrete provider implementations)
+│  └── copilot/
+│     └── runtime.ts    (Copilot SDK adapter)
 │
 ├── store/              (Persistence layer)
 │  └── db.ts            (SQLite: worker sessions, state, conversations, memories)
@@ -94,7 +105,6 @@ Location: `~/.max/` (created with mkdirSync)
 - Explains capabilities, skills system, communication channels
 
 **Step 2: Telegram (Optional)**
-- Fetch Copilot SDK to list available models
 - User creates bot via @BotFather → copies token
 - User gets ID from @userinfobot → locks bot to that user ID
 - Recommend disabling group joins in @BotFather
@@ -104,19 +114,27 @@ Location: `~/.max/` (created with mkdirSync)
 - Create Google OAuth credentials
 - Run `gog auth add email@gmail.com`
 
-**Step 4: Model Selection**
-- Tries to fetch models from authenticated Copilot CLI
+**Step 4: Provider Selection**
+- User selects the AI runtime provider
+- Current built-in option: `copilot`
+
+**Step 5: Model Selection**
+- Tries to fetch models from the selected provider (currently Copilot)
 - Falls back to hardcoded list: Claude Sonnet 4.6, GPT-5.1, GPT-4.1
 - Saves to ~/.max/.env
 
-**Step 5: Writes ~/.max/.env**
+**Step 6: Writes ~/.max/.env**
 ```env
 TELEGRAM_BOT_TOKEN=token_or_empty
 AUTHORIZED_USER_ID=numeric_id_or_empty
 API_PORT=7777
-COPILOT_MODEL=claude-sonnet-4.6
+AI_PROVIDER=copilot
+AI_MODEL=claude-sonnet-4.6
+CLASSIFIER_MODEL=gpt-4.1
 WORKER_TIMEOUT=600000
 ```
+
+Legacy compatibility: if `AI_MODEL` is unset, Max still reads `COPILOT_MODEL`.
 
 ---
 
@@ -223,8 +241,9 @@ defineTool("uninstall_skill", {
 
 1. **Config Init** (config.ts):
    - Loads `~/.max/.env` via dotenv
-   - Validates: TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID, API_PORT, COPILOT_MODEL, WORKER_TIMEOUT
-   - Supports dynamic model switching (config.copilotModel getter/setter)
+  - Validates: TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID, API_PORT, AI_PROVIDER, AI_MODEL, CLASSIFIER_MODEL, WORKER_TIMEOUT
+  - Reads `AI_MODEL || COPILOT_MODEL || DEFAULT_AI_MODEL`
+  - Supports dynamic model switching via `config.aiModel`
 
 2. **Database Init** (store/db.ts):
    ```typescript
@@ -233,10 +252,10 @@ defineTool("uninstall_skill", {
    - Creates tables: worker_sessions, max_state, conversation_log, memories
    - Prunes conversation_log to last 200 entries
 
-3. **Copilot SDK Client** (copilot/client.ts):
+3. **AI Runtime Client** (`ai/runtime.ts` + `providers/copilot/runtime.ts`):
    ```typescript
-   const client = await getClient(); // CopilotClient singleton
-   // Options: { autoStart: true, autoRestart: true }
+  const client = await getClient(); // AIClient for configured provider
+  // Current built-in provider: Copilot
    ```
 
 4. **Orchestrator Init** (orchestrator.ts):
@@ -261,7 +280,7 @@ defineTool("uninstall_skill", {
 6. **HTTP API Server** (api/server.ts):
    ```typescript
    await startApiServer(); // Express on port 7777
-   // Routes: POST /send, GET /events (SSE), /workers, /memories, etc.
+  // Routes: POST /message, GET /stream (SSE), /sessions, /memory, /model, /auto, etc.
    // Auth: Bearer token in ~/.max/api-token (generated once)
    ```
 
@@ -289,7 +308,7 @@ defineTool("uninstall_skill", {
     - 3-second force exit timeout
 
 ### Health Check Loop:
-- Every 30 seconds: checks if CopilotClient is still connected
+- Every 30 seconds: checks if the active AI client is still connected
 - If disconnected: calls ensureClient() to reset
 - Invalidates orchestrator session if client reset
 
@@ -310,8 +329,9 @@ defineTool("uninstall_skill", {
 ```
 
 ### External Services:
-1. **Copilot SDK** (GitHub Copilot CLI):
-   - Automatically started by CopilotClient if not running
+1. **AI Runtime Provider** (current built-in provider: GitHub Copilot CLI):
+  - Runtime selected via `AI_PROVIDER` (default: `copilot`)
+  - Copilot runtime is automatically started if not running
    - User must have `copilot login` authenticated
    - Provides LLM models, tool execution, session management
 
@@ -352,7 +372,10 @@ Path traversal validation prevents escape.
 TELEGRAM_BOT_TOKEN=string|undefined        // Telegram bot token
 AUTHORIZED_USER_ID=string|undefined        // Numeric Telegram user ID
 API_PORT=string (default: 7777)            // HTTP API port
-COPILOT_MODEL=string (default: claude-sonnet-4.6)
+AI_PROVIDER=string (default: copilot)      // AI runtime provider
+AI_MODEL=string (default: claude-sonnet-4.6)
+CLASSIFIER_MODEL=string (default: gpt-4.1)
+COPILOT_MODEL=string|undefined             // Legacy fallback if AI_MODEL unset
 WORKER_TIMEOUT=string (ms, default: 600000)
 MAX_SELF_EDIT=1|undefined                  // Allow Max to edit its own code
 ```
@@ -363,7 +386,9 @@ export const config = {
   telegramBotToken: string | undefined,
   authorizedUserId: number | undefined,
   apiPort: number,
-  copilotModel: string (getter/setter), // Dynamic switching
+  aiProvider: AIProviderName,
+  aiModel: string (getter/setter),      // Dynamic switching
+  classifierModel: string,
   workerTimeoutMs: number,
   telegramEnabled: boolean,               // Derived: token && userId
   selfEditEnabled: boolean,                // Derived: MAX_SELF_EDIT === "1"
@@ -377,7 +402,7 @@ function persistEnvVar(key: string, value: string): void {
 }
 
 export function persistModel(model: string): void {
-  persistEnvVar("COPILOT_MODEL", model);
+  persistEnvVar("AI_MODEL", model);
 }
 ```
 
@@ -393,7 +418,7 @@ cli.ts routes to daemon.ts main()
   ↓
 1. Load config from ~/.max/.env
 2. Initialize SQLite DB (~/.max/max.db)
-3. Create/connect CopilotClient
+3. Create/connect AI runtime client for configured provider
 4. Init orchestrator:
    - Load MCP servers from ~/.copilot/mcp-config.json
    - Load skills from ~/.max/skills/, ~/.agents/skills/
@@ -454,7 +479,7 @@ processQueue() processes one-at-a-time (serialized):
   │
   ├─ executeOnSession():
   │  ├─ Ensure orchestrator session exists
-  │  ├─ Subscribe to session events (assistant.message_delta, tool.execution_complete)
+  │  ├─ Subscribe to normalized runtime events (message.delta, tool.complete)
   │  ├─ Call session.sendAndWait(prompt, 300s timeout)
   │  ├─ Accumulate streamed deltas, call callback with partial text
   │  └─ Return final content or throw if session broken
@@ -566,7 +591,7 @@ getMemorySummary();                        // Format for system message
 
 ### 1. Message Serialization (single-threaded orchestrator):
 - Message queue ensures only ONE message is processed at a time
-- Prevents concurrent Copilot SDK session state corruption
+- Prevents concurrent provider session state corruption
 - Incoming messages queued if orchestrator busy
 - Retries up to 3 times with exponential backoff
 
@@ -626,7 +651,7 @@ callback(textSoFar, done: boolean)
 - **Clients connect to daemon**: TUI (local SSE), Telegram (remote bot)
 - **No database sync**: SQLite is local only
 - **No cloud**: All data stays on user's machine
-- **Copilot CLI dependency**: Must be running alongside Max (autoStart: true)
+- **Provider dependency**: With `AI_PROVIDER=copilot`, Copilot CLI must be available (auto-started by runtime)
 
 ---
 

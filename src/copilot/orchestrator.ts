@@ -1,13 +1,13 @@
-import { approveAll, type CopilotClient, type CopilotSession } from "@github/copilot-sdk";
 import { createTools, type WorkerInfo } from "./tools.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
-import { config, DEFAULT_MODEL } from "../config.js";
+import { config, DEFAULT_AI_MODEL } from "../config.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
-import { resetClient } from "./client.js";
+import { resetClient } from "../ai/runtime.js";
 import { logConversation, getState, setState, deleteState, getMemorySummary, getRecentConversation } from "../store/db.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { resolveModel, type Tier, type RouteResult } from "./router.js";
+import type { AIClient, AISession } from "../ai/types.js";
 
 const MAX_RETRIES = 3;
 const RECONNECT_DELAYS_MS = [1_000, 3_000, 10_000];
@@ -37,7 +37,7 @@ export function setProactiveNotify(fn: ProactiveNotifyFn): void {
   proactiveNotifyFn = fn;
 }
 
-let copilotClient: CopilotClient | undefined;
+let aiClient: AIClient | undefined;
 const workers = new Map<string, WorkerInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -51,9 +51,9 @@ export function getLastRouteResult(): RouteResult | undefined {
 }
 
 // Persistent orchestrator session
-let orchestratorSession: CopilotSession | undefined;
+let orchestratorSession: AISession | undefined;
 // Coalesces concurrent ensureOrchestratorSession calls
-let sessionCreatePromise: Promise<CopilotSession> | undefined;
+let sessionCreatePromise: Promise<AISession> | undefined;
 
 // Message queue — serializes access to the single persistent session
 type QueuedMessage = {
@@ -76,7 +76,7 @@ export function getCurrentSourceChannel(): "telegram" | "tui" | undefined {
 
 function getSessionConfig() {
   const tools = createTools({
-    client: copilotClient!,
+    client: aiClient!,
     workers,
     onWorkerComplete: feedBackgroundResult,
   });
@@ -106,16 +106,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Ensure the SDK client is connected, resetting if necessary. Coalesces concurrent resets. */
-let resetPromise: Promise<CopilotClient> | undefined;
-async function ensureClient(): Promise<CopilotClient> {
-  if (copilotClient && copilotClient.getState() === "connected") {
-    return copilotClient;
+let resetPromise: Promise<AIClient> | undefined;
+async function ensureClient(): Promise<AIClient> {
+  if (aiClient && aiClient.getState() === "connected") {
+    return aiClient;
   }
   if (!resetPromise) {
-    console.log(`[max] Client not connected (state: ${copilotClient?.getState() ?? "null"}), resetting…`);
+    console.log(`[max] Client not connected (state: ${aiClient?.getState() ?? "null"}), resetting…`);
     resetPromise = resetClient().then((c) => {
       console.log(`[max] Client reset successful, state: ${c.getState()}`);
-      copilotClient = c;
+      aiClient = c;
       return c;
     }).finally(() => { resetPromise = undefined; });
   }
@@ -126,9 +126,9 @@ async function ensureClient(): Promise<CopilotClient> {
 function startHealthCheck(): void {
   if (healthCheckTimer) return;
   healthCheckTimer = setInterval(async () => {
-    if (!copilotClient) return;
+    if (!aiClient) return;
     try {
-      const state = copilotClient.getState();
+      const state = aiClient.getState();
       if (state !== "connected") {
         console.log(`[max] Health check: client state is '${state}', resetting…`);
         await ensureClient();
@@ -143,7 +143,7 @@ function startHealthCheck(): void {
 }
 
 /** Create or resume the persistent orchestrator session. */
-async function ensureOrchestratorSession(): Promise<CopilotSession> {
+async function ensureOrchestratorSession(): Promise<AISession> {
   if (orchestratorSession) return orchestratorSession;
   // Coalesce concurrent callers — wait for an in-flight creation
   if (sessionCreatePromise) return sessionCreatePromise;
@@ -159,12 +159,12 @@ async function ensureOrchestratorSession(): Promise<CopilotSession> {
 }
 
 /** Internal: actually create or resume a session (not concurrency-safe — use ensureOrchestratorSession). */
-async function createOrResumeSession(): Promise<CopilotSession> {
+async function createOrResumeSession(): Promise<AISession> {
   const client = await ensureClient();
   const { tools, mcpServers, skillDirectories } = getSessionConfig();
   const memorySummary = getMemorySummary();
 
-  const infiniteSessions = {
+  const persistence = {
     enabled: true,
     backgroundCompactionThreshold: 0.80,
     bufferExhaustionThreshold: 0.95,
@@ -176,7 +176,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
     try {
       console.log(`[max] Resuming orchestrator session ${savedSessionId.slice(0, 8)}…`);
       const session = await client.resumeSession(savedSessionId, {
-        model: config.copilotModel,
+        model: config.aiModel,
         configDir: SESSIONS_DIR,
         streaming: true,
         systemMessage: {
@@ -185,11 +185,10 @@ async function createOrResumeSession(): Promise<CopilotSession> {
         tools,
         mcpServers,
         skillDirectories,
-        onPermissionRequest: approveAll,
-        infiniteSessions,
+        persistence,
       });
       console.log(`[max] Resumed orchestrator session successfully`);
-      currentSessionModel = config.copilotModel;
+      currentSessionModel = config.aiModel;
       return session;
     } catch (err) {
       console.log(`[max] Could not resume session: ${err instanceof Error ? err.message : err}. Creating new.`);
@@ -200,7 +199,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
   // Create a fresh session
   console.log(`[max] Creating new persistent orchestrator session`);
   const session = await client.createSession({
-    model: config.copilotModel,
+    model: config.aiModel,
     configDir: SESSIONS_DIR,
     streaming: true,
     systemMessage: {
@@ -209,8 +208,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
     tools,
     mcpServers,
     skillDirectories,
-    onPermissionRequest: approveAll,
-    infiniteSessions,
+    persistence,
   });
 
   // Persist the session ID for future restarts
@@ -230,25 +228,25 @@ async function createOrResumeSession(): Promise<CopilotSession> {
     }
   }
 
-  currentSessionModel = config.copilotModel;
+  currentSessionModel = config.aiModel;
   return session;
 }
 
-export async function initOrchestrator(client: CopilotClient): Promise<void> {
-  copilotClient = client;
+export async function initOrchestrator(client: AIClient): Promise<void> {
+  aiClient = client;
   const { mcpServers, skillDirectories } = getSessionConfig();
 
   // Validate configured model against available models
   try {
     const models = await client.listModels();
-    const configured = config.copilotModel;
+    const configured = config.aiModel;
     const isAvailable = models.some((m) => m.id === configured);
     if (!isAvailable) {
-      console.log(`[max] ⚠️ Configured model '${configured}' is not available. Falling back to '${DEFAULT_MODEL}'.`);
-      config.copilotModel = DEFAULT_MODEL;
+      console.log(`[max] ⚠️ Configured model '${configured}' is not available. Falling back to '${DEFAULT_AI_MODEL}'.`);
+      config.aiModel = DEFAULT_AI_MODEL;
     }
   } catch (err) {
-    console.log(`[max] Could not validate model (will use '${config.copilotModel}' as-is): ${err instanceof Error ? err.message : err}`);
+    console.log(`[max] Could not validate model (will use '${config.aiModel}' as-is): ${err instanceof Error ? err.message : err}`);
   }
 
   console.log(`[max] Loading ${Object.keys(mcpServers).length} MCP server(s): ${Object.keys(mcpServers).join(", ") || "(none)"}`);
@@ -271,23 +269,23 @@ async function executeOnSession(prompt: string, callback: MessageCallback): Prom
 
   let accumulated = "";
   let toolCallExecuted = false;
-  const unsubToolDone = session.on("tool.execution_complete", () => {
+  const unsubToolDone = session.on("tool.complete", () => {
     toolCallExecuted = true;
   });
-  const unsubDelta = session.on("assistant.message_delta", (event) => {
+  const unsubDelta = session.on("message.delta", (event) => {
     // After a tool call completes, ensure a line break separates the text blocks
     // so they don't visually run together in the TUI.
     if (toolCallExecuted && accumulated.length > 0 && !accumulated.endsWith("\n")) {
       accumulated += "\n";
     }
     toolCallExecuted = false;
-    accumulated += event.data.deltaContent;
+    accumulated += event.data.deltaText;
     callback(accumulated, false);
   });
 
   try {
     const result = await session.sendAndWait({ prompt }, 300_000);
-    const finalContent = result?.data?.content || accumulated || "(No response)";
+    const finalContent = result?.content || accumulated || "(No response)";
     return finalContent;
   } catch (err) {
     // If the session is broken, invalidate it so it's recreated on next attempt
@@ -321,10 +319,10 @@ async function processQueue(): Promise<void> {
     currentSourceChannel = item.sourceChannel;
     try {
       // Route the model before executing
-      const routeResult = await resolveModel(item.prompt, currentSessionModel || config.copilotModel, recentTiers, copilotClient);
+      const routeResult = await resolveModel(item.prompt, currentSessionModel || config.aiModel, recentTiers, aiClient);
       if (routeResult.switched) {
         console.log(`[max] Auto: switching to ${routeResult.model} (${routeResult.overrideName || routeResult.tier})`);
-        config.copilotModel = routeResult.model;
+        config.aiModel = routeResult.model;
         orchestratorSession = undefined;
         deleteState(ORCHESTRATOR_SESSION_KEY);
       }

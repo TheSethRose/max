@@ -1,6 +1,6 @@
 import { getState, setState } from "../store/db.js";
 import { classifyWithLLM } from "./classifier.js";
-import type { CopilotClient } from "@github/copilot-sdk";
+import type { AIClient } from "../ai/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -120,13 +120,13 @@ export function updateRouterConfig(partial: Partial<RouterConfig>): RouterConfig
 // ---------------------------------------------------------------------------
 
 /**
- * Classify a message using GPT-4.1. Falls back to "standard" if the LLM
+ * Classify a message using the configured classifier model. Falls back to "standard" if the LLM
  * is unavailable. Background tasks and follow-ups are handled deterministically.
  */
 async function classifyMessage(
   prompt: string,
   recentTiers: Tier[],
-  client?: CopilotClient,
+  client?: AIClient,
 ): Promise<Tier> {
   const text = sanitize(prompt);
   const lower = text.toLowerCase();
@@ -162,7 +162,7 @@ export async function resolveModel(
   prompt: string,
   currentModel: string,
   recentTiers: Tier[],
-  client?: CopilotClient,
+  client?: AIClient,
 ): Promise<RouteResult> {
   const config = getRouterConfig();
 

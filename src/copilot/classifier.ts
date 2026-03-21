@@ -1,11 +1,11 @@
-import { approveAll, type CopilotClient, type CopilotSession } from "@github/copilot-sdk";
+import { config } from "../config.js";
+import type { AIClient, AISession } from "../ai/types.js";
 import type { Tier } from "./router.js";
 
 // ---------------------------------------------------------------------------
-// Persistent GPT-4.1 classifier session
+// Persistent classifier session
 // ---------------------------------------------------------------------------
 
-const CLASSIFIER_MODEL = "gpt-4.1";
 const CLASSIFY_TIMEOUT_MS = 8_000;
 
 const SYSTEM_PROMPT = `You are a message complexity classifier for an AI assistant called Max. Your ONLY job is to classify incoming user messages into one of three tiers. Respond with ONLY the tier name — nothing else.
@@ -19,10 +19,10 @@ Rules:
 - If unsure, respond STANDARD (it's the safe default).
 - Respond with exactly one word: FAST, STANDARD, or PREMIUM.`;
 
-let classifierSession: CopilotSession | undefined;
-let sessionClient: CopilotClient | undefined;
+let classifierSession: AISession | undefined;
+let sessionClient: AIClient | undefined;
 
-async function ensureSession(client: CopilotClient): Promise<CopilotSession> {
+async function ensureSession(client: AIClient): Promise<AISession> {
   // Recreate if the client changed (e.g. after a reset)
   if (classifierSession && sessionClient === client) {
     return classifierSession;
@@ -35,10 +35,9 @@ async function ensureSession(client: CopilotClient): Promise<CopilotSession> {
   }
 
   classifierSession = await client.createSession({
-    model: CLASSIFIER_MODEL,
+    model: config.classifierModel,
     streaming: false,
     systemMessage: { content: SYSTEM_PROMPT },
-    onPermissionRequest: approveAll,
   });
   sessionClient = client;
   return classifierSession;
@@ -51,11 +50,11 @@ const TIER_MAP: Record<string, Tier> = {
 };
 
 /**
- * Classify a message using GPT-4.1.
+ * Classify a message using the configured classifier model.
  * Returns the tier, or null if the classifier is unavailable / times out.
  */
 export async function classifyWithLLM(
-  client: CopilotClient,
+  client: AIClient,
   message: string,
 ): Promise<Tier | null> {
   try {
@@ -64,7 +63,7 @@ export async function classifyWithLLM(
       { prompt: message },
       CLASSIFY_TIMEOUT_MS,
     );
-    const raw = (result?.data?.content || "").trim().toUpperCase();
+    const raw = (result?.content || "").trim().toUpperCase();
     return TIER_MAP[raw] ?? "standard";
   } catch (err) {
     console.log(

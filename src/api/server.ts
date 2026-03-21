@@ -10,6 +10,7 @@ import { searchMemories } from "../store/db.js";
 import { listSkills, removeSkill } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { API_TOKEN_PATH, ensureMaxHome } from "../paths.js";
+import { getClient } from "../ai/runtime.js";
 
 // Ensure token file exists (generate on first run)
 let apiToken: string | null = null;
@@ -148,7 +149,7 @@ app.post("/cancel", async (_req: Request, res: Response) => {
 
 // Get or switch model
 app.get("/model", (_req: Request, res: Response) => {
-  res.json({ model: config.copilotModel });
+  res.json({ model: config.aiModel });
 });
 app.post("/model", async (req: Request, res: Response) => {
   const { model } = req.body as { model?: string };
@@ -158,7 +159,6 @@ app.post("/model", async (req: Request, res: Response) => {
   }
   // Validate against available models before persisting
   try {
-    const { getClient } = await import("../copilot/client.js");
     const client = await getClient();
     const models = await client.listModels();
     const match = models.find((m) => m.id === model);
@@ -173,8 +173,8 @@ app.post("/model", async (req: Request, res: Response) => {
   } catch {
     // If we can't validate (client not ready), allow the switch — it'll fail on next message if wrong
   }
-  const previous = config.copilotModel;
-  config.copilotModel = model;
+  const previous = config.aiModel;
+  config.aiModel = model;
   persistModel(model);
   res.json({ previous, current: model });
 });
@@ -185,7 +185,7 @@ app.get("/auto", (_req: Request, res: Response) => {
   const lastRoute = getLastRouteResult();
   res.json({
     ...routerConfig,
-    currentModel: config.copilotModel,
+    currentModel: config.aiModel,
     lastRoute: lastRoute || null,
   });
 });
