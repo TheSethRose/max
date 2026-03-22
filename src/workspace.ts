@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   BOOTSTRAP_SEEDED_MARKER_PATH,
@@ -16,6 +16,7 @@ type ProfileFileName =
   | "IDENTITY.md"
   | "SOUL.md"
   | "STANDING_ORDERS.md"
+  | "safety-log.md"
   | "TOOLS.md"
   | "USER.md";
 
@@ -32,6 +33,9 @@ export interface WorkspaceProfileStatus {
 
 const MAX_PROFILE_CHARS_PER_FILE = 4_000;
 const HEARTBEAT_ACK_MAX_CHARS = 300;
+const MAX_SAFETY_LOG_CELL_CHARS = 240;
+const SAFETY_LOG_TABLE_HEADER = "| Date/Time | Action | Status |";
+const SAFETY_LOG_TABLE_DIVIDER = "|-----------|--------|--------|";
 
 const PROFILE_FILES: readonly ProfileFileDefinition[] = [
   {
@@ -45,6 +49,10 @@ const PROFILE_FILES: readonly ProfileFileDefinition[] = [
   {
     name: "SOUL.md",
     modes: ["orchestrator"],
+  },
+  {
+    name: "safety-log.md",
+    modes: ["orchestrator", "worker", "heartbeat"],
   },
   {
     name: "USER.md",
@@ -73,6 +81,34 @@ function truncateContent(content: string, maxChars = MAX_PROFILE_CHARS_PER_FILE)
     return content;
   }
   return `${content.slice(0, maxChars)}\n\n[truncated]`;
+}
+
+function truncateContentFromEnd(content: string, maxChars = MAX_PROFILE_CHARS_PER_FILE): string {
+  if (content.length <= maxChars) {
+    return content;
+  }
+  return `[truncated]\n\n${content.slice(-maxChars)}`;
+}
+
+function hasStructuredSafetyLogHeader(content: string): boolean {
+  return content.includes(SAFETY_LOG_TABLE_HEADER);
+}
+
+function hasSafetyLogEntries(content: string): boolean {
+  return normalizeContent(content)
+    .split("\n")
+    .map((line) => line.trim())
+    .some((line) => {
+      if (!line.startsWith("|")) {
+        return false;
+      }
+      if (line === SAFETY_LOG_TABLE_HEADER || line === SAFETY_LOG_TABLE_DIVIDER) {
+        return false;
+      }
+
+      const cells = line.split("|").map((cell) => cell.trim()).filter(Boolean);
+      return cells.length >= 3;
+    });
 }
 
 export function getWorkspaceProfileDir(): string {
@@ -152,6 +188,57 @@ export function readWorkspaceProfileFile(name: ProfileFileName): string {
   }
 }
 
+function sanitizeSafetyLogCell(value: string): string {
+  const normalized = normalizeContent(value)
+    .replace(/\s+/g, " ")
+    .replace(/\|/g, "\\|");
+  if (normalized.length <= MAX_SAFETY_LOG_CELL_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_SAFETY_LOG_CELL_CHARS - 1)}…`;
+}
+
+export function appendSafetyLogEntry(action: string, status: string): void {
+  try {
+    ensureWorkspaceProfile();
+
+    const filePath = getWorkspaceProfilePath("safety-log.md");
+    const header = [
+      "# Safety Log",
+      "",
+      SAFETY_LOG_TABLE_HEADER,
+      SAFETY_LOG_TABLE_DIVIDER,
+    ].join("\n");
+
+    let existingContent = "";
+    try {
+      existingContent = readFileSync(filePath, "utf-8");
+    } catch {
+      existingContent = "";
+    }
+
+    if (!existingContent) {
+      writeFileSync(filePath, `${header}\n`, "utf-8");
+    } else if (!hasStructuredSafetyLogHeader(existingContent)) {
+      const prefix = existingContent.endsWith("\n") ? "\n" : "\n\n";
+      appendFileSync(
+        filePath,
+        `${prefix}## Runtime Entries\n\n${SAFETY_LOG_TABLE_HEADER}\n${SAFETY_LOG_TABLE_DIVIDER}\n`,
+        "utf-8",
+      );
+    }
+
+    const timestamp = new Date().toISOString();
+    appendFileSync(
+      filePath,
+      `| ${sanitizeSafetyLogCell(timestamp)} | ${sanitizeSafetyLogCell(action)} | ${sanitizeSafetyLogCell(status)} |\n`,
+      "utf-8",
+    );
+  } catch {
+    // Safety logging must never change runtime behavior.
+  }
+}
+
 export function isEffectivelyEmptyMarkdown(content: string): boolean {
   const meaningful = normalizeContent(content)
     .split("\n")
@@ -197,7 +284,15 @@ function formatFileSection(name: ProfileFileName, content: string): string | und
     return undefined;
   }
 
-  return `### ${name}\n${truncateContent(normalized)}`;
+  if (name === "safety-log.md" && !hasSafetyLogEntries(normalized)) {
+    return undefined;
+  }
+
+  const formattedContent = name === "safety-log.md"
+    ? truncateContentFromEnd(normalized)
+    : truncateContent(normalized);
+
+  return `### ${name}\n${formattedContent}`;
 }
 
 export function renderProfileContext(mode: PromptProfileMode): string {
@@ -253,7 +348,9 @@ export function buildHeartbeatPrompt(autonomyMode: "observe" | "notify" | "act")
 
   const sections = [
     formatFileSection("HEARTBEAT.md", heartbeat),
+    formatFileSection("SOUL.md", readWorkspaceProfileFile("SOUL.md")),
     formatFileSection("STANDING_ORDERS.md", readWorkspaceProfileFile("STANDING_ORDERS.md")),
+    formatFileSection("safety-log.md", readWorkspaceProfileFile("safety-log.md")),
     formatFileSection("USER.md", readWorkspaceProfileFile("USER.md")),
     formatFileSection("TOOLS.md", readWorkspaceProfileFile("TOOLS.md")),
   ].filter((section): section is string => !!section);

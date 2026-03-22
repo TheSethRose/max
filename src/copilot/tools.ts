@@ -11,7 +11,7 @@ import { DB_PATH, ENV_PATH, SESSIONS_DIR } from "../paths.js";
 import { getCurrentSourceChannel } from "./orchestrator.js";
 import { getRouterConfig, type RouteResult, updateRouterConfig } from "./router.js";
 import { getWorkerSystemMessage } from "./system-message.js";
-import { getWorkspaceProfileDir, renderProfileContext } from "../workspace.js";
+import { appendSafetyLogEntry, getWorkspaceProfileDir, renderProfileContext } from "../workspace.js";
 
 function isTimeoutError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -91,6 +91,14 @@ function formatProgressUpdate(workerName: string, content: string): string {
   return `[${workerName}] ${content}`;
 }
 
+function summarizeSafetyLogText(text: string, maxChars = 180): string {
+  const normalized = normalizeProgressText(text).replace(/\s+/g, " ");
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars - 1)}…`;
+}
+
 function dispatchWorkerTask(
   deps: ToolDeps,
   worker: WorkerInfo,
@@ -110,6 +118,8 @@ function dispatchWorkerTask(
   let lastPublishedNormalized = "";
   let publishedChars = 0;
   let lastPublishedAt = 0;
+
+  appendSafetyLogEntry(`Dispatched worker '${worker.name}' in ${worker.workingDir}`, "running");
 
   const maybePublishProgress = (force = false): void => {
     const normalized = normalizeProgressText(streamedText);
@@ -155,10 +165,18 @@ function dispatchWorkerTask(
 
   worker.session.sendAndWait({ prompt }, timeoutMs).then((result) => {
     worker.lastOutput = result?.content || normalizeProgressText(streamedText) || "No response";
+    appendSafetyLogEntry(
+      `Worker '${worker.name}' completed: ${summarizeSafetyLogText(worker.lastOutput)}`,
+      "ok",
+    );
     deps.onWorkerComplete(worker.name, worker.lastOutput);
   }).catch((err) => {
     const errMsg = formatWorkerError(worker.name, worker.startedAt!, timeoutMs, err);
     worker.lastOutput = errMsg;
+    appendSafetyLogEntry(
+      `Worker '${worker.name}' failed: ${summarizeSafetyLogText(errMsg)}`,
+      "error",
+    );
     deps.onWorkerComplete(worker.name, errMsg);
   }).finally(() => {
     unsubscribeDelta();
@@ -219,6 +237,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
           originChannel: getCurrentSourceChannel(),
         };
         deps.workers.set(args.name, worker);
+        appendSafetyLogEntry(`Created worker session '${args.name}' in ${args.working_dir}`, "created");
 
         // Persist to SQLite
         const db = getDb();
@@ -314,6 +333,8 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
 
         const db = getDb();
         db.prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
+
+        appendSafetyLogEntry(`Terminated worker '${args.name}'`, "terminated");
 
         return `Worker '${args.name}' terminated.`;
       },

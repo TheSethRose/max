@@ -1,8 +1,10 @@
 import { config } from "./config.js";
 import { isOrchestratorBusy, sendToOrchestrator, type ProactiveChannel } from "./copilot/orchestrator.js";
-import { buildHeartbeatPrompt, classifyHeartbeatResult, hasHeartbeatChecklist } from "./workspace.js";
+import { appendSafetyLogEntry, buildHeartbeatPrompt, classifyHeartbeatResult, hasHeartbeatChecklist } from "./workspace.js";
 
 type HeartbeatNotifier = (text: string, channel: ProactiveChannel) => void;
+
+const HEARTBEAT_INITIAL_DELAY_MS = 15_000;
 
 function isWithinActiveHours(now: Date): boolean {
   const range = config.heartbeatActiveHours;
@@ -54,6 +56,12 @@ export function startHeartbeatLoop(notify: HeartbeatNotifier): () => void {
       try {
         const result = classifyHeartbeatResult(text);
         const channel = resolveHeartbeatChannel();
+        appendSafetyLogEntry(
+          result.kind === "ok"
+            ? "Scheduled heartbeat completed with HEARTBEAT_OK"
+            : `Scheduled heartbeat raised an alert: ${result.text}`,
+          result.kind === "ok" ? "ok" : "alert",
+        );
         if (result.kind === "alert" && channel !== "none") {
           notify(result.text, channel);
         }
@@ -61,11 +69,18 @@ export function startHeartbeatLoop(notify: HeartbeatNotifier): () => void {
         inFlight = false;
       }
     }).catch(() => {
+      appendSafetyLogEntry("Scheduled heartbeat failed before producing a result", "error");
       inFlight = false;
     });
   };
 
   const timer = setInterval(tick, config.heartbeatEveryMs);
   timer.unref?.();
-  return () => clearInterval(timer);
+  const initialTimer = setTimeout(tick, Math.min(config.heartbeatEveryMs, HEARTBEAT_INITIAL_DELAY_MS));
+  initialTimer.unref?.();
+
+  return () => {
+    clearInterval(timer);
+    clearTimeout(initialTimer);
+  };
 }
