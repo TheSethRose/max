@@ -58,6 +58,9 @@ const BLOCKED_WORKER_DIRS = [
 ];
 
 const MAX_CONCURRENT_WORKERS = 5;
+const WORKER_PROGRESS_INITIAL_CHARS = 80;
+const WORKER_PROGRESS_MIN_INCREMENT_CHARS = 140;
+const WORKER_PROGRESS_MIN_INTERVAL_MS = 8_000;
 
 export interface WorkerInfo {
   name: string;
@@ -77,6 +80,93 @@ export interface ToolDeps {
   getLastRouteResult: () => RouteResult | undefined;
   workers: Map<string, WorkerInfo>;
   onWorkerComplete: (name: string, result: string) => void;
+  onWorkerProgress: (name: string, update: string) => void;
+}
+
+function normalizeProgressText(text: string): string {
+  return text.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").trim();
+}
+
+function formatProgressUpdate(workerName: string, content: string): string {
+  return `[${workerName}] ${content}`;
+}
+
+function dispatchWorkerTask(
+  deps: ToolDeps,
+  worker: WorkerInfo,
+  prompt: string,
+): void {
+  worker.status = "running";
+  worker.startedAt = Date.now();
+  worker.lastOutput = undefined;
+
+  const db = getDb();
+  db.prepare(`UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(
+    worker.name,
+  );
+
+  const timeoutMs = config.workerTimeoutMs;
+  let streamedText = "";
+  let lastPublishedNormalized = "";
+  let publishedChars = 0;
+  let lastPublishedAt = 0;
+
+  const maybePublishProgress = (force = false): void => {
+    const normalized = normalizeProgressText(streamedText);
+    if (!normalized || normalized === lastPublishedNormalized) {
+      return;
+    }
+
+    const newlyAdded = normalizeProgressText(
+      normalized.startsWith(lastPublishedNormalized)
+        ? normalized.slice(lastPublishedNormalized.length)
+        : normalized,
+    );
+    if (!newlyAdded) {
+      return;
+    }
+
+    if (!force) {
+      const nextThreshold = publishedChars === 0
+        ? WORKER_PROGRESS_INITIAL_CHARS
+        : publishedChars + WORKER_PROGRESS_MIN_INCREMENT_CHARS;
+      if (normalized.length < nextThreshold) {
+        return;
+      }
+      if (publishedChars > 0 && Date.now() - lastPublishedAt < WORKER_PROGRESS_MIN_INTERVAL_MS) {
+        return;
+      }
+    }
+
+    lastPublishedNormalized = normalized;
+    publishedChars = normalized.length;
+    lastPublishedAt = Date.now();
+    deps.onWorkerProgress(worker.name, formatProgressUpdate(worker.name, newlyAdded));
+  };
+
+  const unsubscribeDelta = worker.session.on("message.delta", (event) => {
+    streamedText += event.data.deltaText;
+    maybePublishProgress();
+  });
+
+  const unsubscribeTool = worker.session.on("tool.complete", () => {
+    maybePublishProgress(true);
+  });
+
+  worker.session.sendAndWait({ prompt }, timeoutMs).then((result) => {
+    worker.lastOutput = result?.content || normalizeProgressText(streamedText) || "No response";
+    deps.onWorkerComplete(worker.name, worker.lastOutput);
+  }).catch((err) => {
+    const errMsg = formatWorkerError(worker.name, worker.startedAt!, timeoutMs, err);
+    worker.lastOutput = errMsg;
+    deps.onWorkerComplete(worker.name, errMsg);
+  }).finally(() => {
+    unsubscribeDelta();
+    unsubscribeTool();
+    worker.session.destroy().catch(() => {});
+    deps.workers.delete(worker.name);
+    getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(worker.name);
+  });
 }
 
 export function createTools(deps: ToolDeps): AIToolDefinition[] {
@@ -138,29 +228,11 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
         ).run(args.name, session.sessionId, args.working_dir);
 
         if (args.initial_prompt) {
-          worker.status = "running";
-          worker.startedAt = Date.now();
-          db.prepare(
-            `UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`
-          ).run(args.name);
-
-          const timeoutMs = config.workerTimeoutMs;
-          // Non-blocking: dispatch work and return immediately
-          session.sendAndWait({
-            prompt: `Working directory: ${args.working_dir}\n\n${withProfileWorkspaceGuidance(args.working_dir, args.initial_prompt)}`,
-          }, timeoutMs).then((result) => {
-            worker.lastOutput = result?.content || "No response";
-            deps.onWorkerComplete(args.name, worker.lastOutput);
-          }).catch((err) => {
-            const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
-            worker.lastOutput = errMsg;
-            deps.onWorkerComplete(args.name, errMsg);
-          }).finally(() => {
-            // Auto-destroy background workers after completion to free memory (~400MB per worker)
-            session.destroy().catch(() => {});
-            deps.workers.delete(args.name);
-            getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
-          });
+          dispatchWorkerTask(
+            deps,
+            worker,
+            `Working directory: ${args.working_dir}\n\n${withProfileWorkspaceGuidance(args.working_dir, args.initial_prompt)}`,
+          );
 
           return `Worker '${args.name}' created in ${args.working_dir}. Task dispatched — I'll notify you when it's done.`;
         }
@@ -186,28 +258,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
           return `Worker '${args.name}' is currently busy. Wait for it to finish or kill it.`;
         }
 
-        worker.status = "running";
-        worker.startedAt = Date.now();
-        const db = getDb();
-        db.prepare(`UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(
-          args.name
-        );
-
-        const timeoutMs = config.workerTimeoutMs;
-        // Non-blocking: dispatch work and return immediately
-        worker.session.sendAndWait({ prompt: withProfileWorkspaceGuidance(worker.workingDir, args.prompt) }, timeoutMs).then((result) => {
-          worker.lastOutput = result?.content || "No response";
-          deps.onWorkerComplete(args.name, worker.lastOutput);
-        }).catch((err) => {
-          const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
-          worker.lastOutput = errMsg;
-          deps.onWorkerComplete(args.name, errMsg);
-        }).finally(() => {
-          // Auto-destroy after each send_to_worker dispatch to free memory
-          worker.session.destroy().catch(() => {});
-          deps.workers.delete(args.name);
-          getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
-        });
+        dispatchWorkerTask(deps, worker, withProfileWorkspaceGuidance(worker.workingDir, args.prompt));
 
         return `Task dispatched to worker '${args.name}'. I'll notify you when it's done.`;
       },

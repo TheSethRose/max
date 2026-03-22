@@ -90,6 +90,7 @@ function getSessionConfig() {
     getLastRouteResult,
     workers,
     onWorkerComplete: feedBackgroundResult,
+    onWorkerProgress: notifyWorkerProgress,
   });
   const mcpServers = loadMcpConfig();
   const skillDirectories = getSkillDirectories();
@@ -110,6 +111,10 @@ export function feedBackgroundResult(workerName: string, result: string): void {
       }
     }
   );
+}
+
+export function notifyWorkerProgress(workerName: string, update: string): void {
+  logMessage("out", "worker", update);
 }
 
 function sleep(ms: number): Promise<void> {

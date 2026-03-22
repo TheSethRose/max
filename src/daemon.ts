@@ -26,6 +26,10 @@ async function main(): Promise<void> {
   setMessageLogger((direction, source, text) => {
     const arrow = direction === "in" ? "⟶" : "⟵";
     const tag = source.padEnd(8);
+    if (source === "worker") {
+      console.log(`[max] ${tag} ${arrow}  ${text}`);
+      return;
+    }
     console.log(`[max] ${tag} ${arrow}  ${truncate(text)}`);
   });
 
