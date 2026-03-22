@@ -2,7 +2,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { randomBytes } from "crypto";
-import { sendToOrchestrator, getWorkers, cancelCurrentMessage, getLastRouteResult } from "../copilot/orchestrator.js";
+import { sendToOrchestrator, getWorkers, cancelCurrentMessage, getLastRouteResult, resetOrchestratorSession } from "../copilot/orchestrator.js";
 import { sendPhoto } from "../telegram/bot.js";
 import { config, persistModel } from "../config.js";
 import { getRouterConfig, updateRouterConfig } from "../copilot/router.js";
@@ -145,6 +145,18 @@ app.post("/cancel", async (_req: Request, res: Response) => {
     );
   }
   res.json({ status: "ok", cancelled });
+});
+
+// Start a fresh orchestrator session
+app.post("/new", async (_req: Request, res: Response) => {
+  await resetOrchestratorSession();
+  res.json({ status: "ok", message: "Fresh session ready" });
+});
+
+// Alias for /new to mirror common chat UX
+app.post("/reset", async (_req: Request, res: Response) => {
+  await resetOrchestratorSession();
+  res.json({ status: "ok", message: "Fresh session ready" });
 });
 
 // Get or switch model

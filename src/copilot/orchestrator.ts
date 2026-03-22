@@ -4,10 +4,11 @@ import { config, getDefaultAiModel } from "../config.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
 import { getWorkerClient, resetClient } from "../ai/runtime.js";
-import { logConversation, getState, setState, deleteState, getMemorySummary, getRecentConversation } from "../store/db.js";
+import { clearConversationLog, logConversation, getState, setState, deleteState, getMemorySummary, getRecentConversation } from "../store/db.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { resolveModel, type Tier, type RouteResult } from "./router.js";
 import type { AIClient, AISession } from "../ai/types.js";
+import { ensureWorkspaceProfile, renderProfileContext } from "../workspace.js";
 
 const MAX_RETRIES = 3;
 const RECONNECT_DELAYS_MS = [1_000, 3_000, 10_000];
@@ -18,7 +19,10 @@ const ORCHESTRATOR_SESSION_KEY = "orchestrator_session_id";
 export type MessageSource =
   | { type: "telegram"; chatId: number; messageId: number }
   | { type: "tui"; connectionId: string }
-  | { type: "background" };
+  | { type: "background" }
+  | { type: "heartbeat" };
+
+export type ProactiveChannel = "telegram" | "tui" | "all" | "none";
 
 export type MessageCallback = (text: string, done: boolean) => void;
 
@@ -30,7 +34,7 @@ export function setMessageLogger(fn: LogFn): void {
 }
 
 // Proactive notification — sends unsolicited messages to the user on a specific channel
-type ProactiveNotifyFn = (text: string, channel?: "telegram" | "tui") => void;
+type ProactiveNotifyFn = (text: string, channel?: ProactiveChannel) => void;
 let proactiveNotifyFn: ProactiveNotifyFn | undefined;
 
 export function setProactiveNotify(fn: ProactiveNotifyFn): void {
@@ -40,6 +44,7 @@ export function setProactiveNotify(fn: ProactiveNotifyFn): void {
 let aiClient: AIClient | undefined;
 const workers = new Map<string, WorkerInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
+let lastWorkspaceContext = "";
 
 // Router state — tracks model across the session
 let currentSessionModel: string | undefined;
@@ -59,7 +64,7 @@ let sessionCreatePromise: Promise<AISession> | undefined;
 type QueuedMessage = {
   prompt: string;
   callback: MessageCallback;
-  sourceChannel?: "telegram" | "tui";
+  sourceChannel?: ProactiveChannel;
   resolve: (value: string) => void;
   reject: (err: unknown) => void;
 };
@@ -67,17 +72,22 @@ const messageQueue: QueuedMessage[] = [];
 let processing = false;
 let currentCallback: MessageCallback | undefined;
 /** The channel currently being processed — tools use this to tag new workers. */
-let currentSourceChannel: "telegram" | "tui" | undefined;
+let currentSourceChannel: ProactiveChannel | undefined;
 
 /** Get the channel that originated the message currently being processed. */
-export function getCurrentSourceChannel(): "telegram" | "tui" | undefined {
+export function getCurrentSourceChannel(): ProactiveChannel | undefined {
   return currentSourceChannel;
+}
+
+export function isOrchestratorBusy(): boolean {
+  return processing || messageQueue.length > 0 || !!currentCallback;
 }
 
 function getSessionConfig() {
   const tools = createTools({
     client: aiClient!,
     getWorkerClient,
+    getLastRouteResult,
     workers,
     onWorkerComplete: feedBackgroundResult,
   });
@@ -164,6 +174,9 @@ async function createOrResumeSession(): Promise<AISession> {
   const client = await ensureClient();
   const { tools, mcpServers, skillDirectories } = getSessionConfig();
   const memorySummary = getMemorySummary();
+  ensureWorkspaceProfile();
+  const workspaceContext = renderProfileContext("orchestrator");
+  lastWorkspaceContext = workspaceContext;
 
   const persistence = {
     enabled: true,
@@ -181,7 +194,10 @@ async function createOrResumeSession(): Promise<AISession> {
         configDir: SESSIONS_DIR,
         streaming: true,
         systemMessage: {
-          content: getOrchestratorSystemMessage(memorySummary || undefined, { selfEditEnabled: config.selfEditEnabled }),
+          content: getOrchestratorSystemMessage(memorySummary || undefined, {
+            selfEditEnabled: config.selfEditEnabled,
+            workspaceContext: workspaceContext || undefined,
+          }),
         },
         tools,
         mcpServers,
@@ -204,7 +220,10 @@ async function createOrResumeSession(): Promise<AISession> {
     configDir: SESSIONS_DIR,
     streaming: true,
     systemMessage: {
-      content: getOrchestratorSystemMessage(memorySummary || undefined, { selfEditEnabled: config.selfEditEnabled }),
+      content: getOrchestratorSystemMessage(memorySummary || undefined, {
+        selfEditEnabled: config.selfEditEnabled,
+        workspaceContext: workspaceContext || undefined,
+      }),
     },
     tools,
     mcpServers,
@@ -320,6 +339,14 @@ async function processQueue(): Promise<void> {
     const item = messageQueue.shift()!;
     currentSourceChannel = item.sourceChannel;
     try {
+      const workspaceContext = renderProfileContext("orchestrator");
+      if (workspaceContext !== lastWorkspaceContext) {
+        lastWorkspaceContext = workspaceContext;
+        orchestratorSession = undefined;
+        currentSessionModel = undefined;
+        deleteState(ORCHESTRATOR_SESSION_KEY);
+      }
+
       // Route the model before executing
       const routeResult = await resolveModel(item.prompt, currentSessionModel || config.aiModel, recentTiers, aiClient);
       if (routeResult.switched) {
@@ -357,7 +384,8 @@ export async function sendToOrchestrator(
 ): Promise<void> {
   const sourceLabel =
     source.type === "telegram" ? "telegram" :
-    source.type === "tui" ? "tui" : "background";
+    source.type === "tui" ? "tui" :
+    source.type === "heartbeat" ? "heartbeat" : "background";
   logMessage("in", sourceLabel, prompt);
 
   // Tag the prompt with its source channel
@@ -366,12 +394,13 @@ export async function sendToOrchestrator(
     : `[via ${sourceLabel}] ${prompt}`;
 
   // Log role: background events are "system", user messages are "user"
-  const logRole = source.type === "background" ? "system" : "user";
+  const logRole = source.type === "background" || source.type === "heartbeat" ? "system" : "user";
 
   // Determine the source channel for worker origin tracking
-  const sourceChannel: "telegram" | "tui" | undefined =
+  const sourceChannel: ProactiveChannel | undefined =
     source.type === "telegram" ? "telegram" :
-    source.type === "tui" ? "tui" : undefined;
+    source.type === "tui" ? "tui" :
+    source.type === "heartbeat" ? config.heartbeatTarget : undefined;
 
   // Enqueue and process
   void (async () => {
@@ -434,6 +463,30 @@ export async function cancelCurrentMessage(): Promise<boolean> {
   }
 
   return drained > 0;
+}
+
+/** Start a fresh orchestrator session and clear the short recovery buffer. */
+export async function resetOrchestratorSession(): Promise<void> {
+  await cancelCurrentMessage();
+
+  const activeSession = orchestratorSession;
+  orchestratorSession = undefined;
+  sessionCreatePromise = undefined;
+  currentSessionModel = undefined;
+  recentTiers = [];
+  lastRouteResult = undefined;
+  currentSourceChannel = undefined;
+
+  deleteState(ORCHESTRATOR_SESSION_KEY);
+  clearConversationLog();
+
+  if (activeSession) {
+    try {
+      await activeSession.destroy();
+    } catch (err) {
+      console.log(`[max] Best-effort session destroy failed during reset: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 }
 
 export function getWorkers(): Map<string, WorkerInfo> {

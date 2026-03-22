@@ -6,6 +6,7 @@
     "max": "dist/cli.js"
   },
   "files": [
+    "BOOTSTRAP.md",
     "dist/**/*.js",
     "skills/",
     "README.md"

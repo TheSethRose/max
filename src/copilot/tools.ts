@@ -7,9 +7,11 @@ import { join, sep, resolve } from "path";
 import { homedir } from "os";
 import { listSkills, createSkill, removeSkill } from "./skills.js";
 import { config, persistModel } from "../config.js";
-import { SESSIONS_DIR } from "../paths.js";
+import { DB_PATH, ENV_PATH, SESSIONS_DIR } from "../paths.js";
 import { getCurrentSourceChannel } from "./orchestrator.js";
-import { getRouterConfig, updateRouterConfig } from "./router.js";
+import { getRouterConfig, type RouteResult, updateRouterConfig } from "./router.js";
+import { getWorkerSystemMessage } from "./system-message.js";
+import { renderProfileContext } from "../workspace.js";
 
 function isTimeoutError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -43,12 +45,13 @@ export interface WorkerInfo {
   /** Timestamp (ms) when the worker started its current task. */
   startedAt?: number;
   /** Channel that created this worker — completions route back here. */
-  originChannel?: "telegram" | "tui";
+  originChannel?: "telegram" | "tui" | "all" | "none";
 }
 
 export interface ToolDeps {
   client: AIClient;
   getWorkerClient: () => Promise<AIClient>;
+  getLastRouteResult: () => RouteResult | undefined;
   workers: Map<string, WorkerInfo>;
   onWorkerComplete: (name: string, result: string) => void;
 }
@@ -85,10 +88,14 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
         }
 
         const workerClient = await deps.getWorkerClient();
+        const workerWorkspaceContext = renderProfileContext("worker");
         const session = await workerClient.createSession({
           model: config.aiModel,
           configDir: SESSIONS_DIR,
           workingDirectory: args.working_dir,
+          systemMessage: {
+            content: getWorkerSystemMessage(workerWorkspaceContext || undefined),
+          },
         });
 
         const worker: WorkerInfo = {
@@ -422,6 +429,47 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
           const msg = err instanceof Error ? err.message : String(err);
           return `Failed to list models: ${msg}`;
         }
+      },
+    }),
+
+    defineAiTool("get_runtime_status", {
+      description:
+        "Show the current runtime/provider status for Max. Use when the user asks which model Max is using, " +
+        "whether auto mode is on, what model was used most recently, or where model/auto settings are stored.",
+      parameters: z.object({}),
+      handler: async () => {
+        const router = getRouterConfig();
+        const lastRoute = deps.getLastRouteResult();
+        const lines = [
+          `Provider: ${config.aiProvider}`,
+          `Configured model: ${config.aiModel}`,
+          `Classifier model: ${config.classifierModel}`,
+          `Auto mode: ${router.enabled ? "on" : "off"}`,
+        ];
+
+        if (router.enabled) {
+          lines.push(
+            "Auto-routing tiers:",
+            `• fast: ${router.tierModels.fast}`,
+            `• standard: ${router.tierModels.standard}`,
+            `• premium: ${router.tierModels.premium}`,
+          );
+        }
+
+        if (lastRoute) {
+          const lastTier = lastRoute.overrideName ? `${lastRoute.overrideName} override` : (lastRoute.tier ?? "manual");
+          lines.push(`Last routed model: ${lastRoute.model} (${lastRoute.routerMode}, ${lastTier})`);
+        } else {
+          lines.push("Last routed model: none yet since startup");
+        }
+
+        lines.push(
+          "Persistence:",
+          `• Fixed model is stored in ${ENV_PATH} via AI_MODEL`,
+          `• Auto mode is stored in ${DB_PATH} as the 'router_config' state entry`,
+        );
+
+        return lines.join("\n");
       },
     }),
 

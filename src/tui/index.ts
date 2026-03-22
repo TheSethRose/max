@@ -854,10 +854,17 @@ function cmdAuto(): void {
   });
 }
 
+function cmdNew(): void {
+  apiPost("/new", {}, () => {
+    console.log(`  ${C.green("✨")} fresh session ready\n`);
+  });
+}
+
 function cmdHelp(): void {
   console.log();
   console.log(C.boldWhite("    COMMANDS"));
   console.log();
+  console.log(`    ${C.coral("/new")}                  start a fresh session`);
   console.log(`    ${C.coral("/model")} ${C.dim("[name]")}        show or switch model`);
   console.log(`    ${C.coral("/auto")}                 toggle auto model routing`);
   console.log(`    ${C.coral("/memory")}               show stored memories`);
@@ -949,6 +956,7 @@ setTimeout(() => {
     }
 
     if (trimmed === "/cancel") { sendCancel(); return; }
+  if (trimmed === "/new" || trimmed === "/reset") { cmdNew(); return; }
     if (trimmed === "/sessions" || trimmed === "/workers") { cmdWorkers(); return; }
     if (trimmed.startsWith("/model")) { cmdModel(trimmed.slice(6).trim()); return; }
     if (trimmed === "/auto") { cmdAuto(); return; }

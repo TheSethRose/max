@@ -13,6 +13,7 @@ import {
 } from "./config.js";
 import { normalizeAiProviderName, SUPPORTED_AI_PROVIDERS, type AIProviderName } from "./ai/types.js";
 import { inferMastraApiKeyEnv, listMastraModels } from "./providers/mastra/runtime.js";
+import { ensureWorkspaceProfile, getWorkspaceProfileDir, getWorkspaceProfilePath } from "./workspace.js";
 
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
@@ -148,6 +149,7 @@ ${BOLD}╔═══════════════════════�
   console.log(`${DIM}Config directory: ${MAX_HOME}${RESET}\n`);
 
   ensureMaxHome();
+  const workspaceStatus = ensureWorkspaceProfile();
 
   // Load existing values if any
   const existing: Record<string, string> = {};
@@ -463,6 +465,9 @@ ${BOLD}╔═══════════════════════�
   console.log(`
 ${GREEN}${BOLD}✅ Max is ready!${RESET}
 ${DIM}Config saved to ${ENV_PATH}${RESET}
+${DIM}Profile workspace: ${getWorkspaceProfileDir()}${RESET}
+${workspaceStatus.bootstrapActive ? `${DIM}Bootstrap active: ${getWorkspaceProfilePath("BOOTSTRAP.md")}${RESET}` : ""}
+${workspaceStatus.removedLocalBootstrapSource ? `${DIM}Local repo bootstrap removed after seeding (one-time setup)${RESET}` : ""}
 
 ${BOLD}Get started:${RESET}
 
@@ -477,6 +482,10 @@ ${BOLD}Get started:${RESET}
 
   ${CYAN}3.${RESET} ${setupTelegram ? "Open Telegram and message your bot!" : "Connect via terminal:"}
      ${BOLD}${setupTelegram ? "(message your bot on Telegram)" : "max tui"}${RESET}
+
+  ${CYAN}4.${RESET} ${workspaceStatus.bootstrapActive
+    ? `On your first chat, Max will run the one-time bootstrap in ${BOLD}${getWorkspaceProfilePath("BOOTSTRAP.md")}${RESET} to learn your preferences and refine the profile files.`
+    : "If BOOTSTRAP.md was already completed, Max will use the existing profile files directly."}
 
 ${BOLD}Things to try:${RESET}
 

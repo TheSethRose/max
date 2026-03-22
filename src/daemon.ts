@@ -6,6 +6,10 @@ import { getDb, closeDb } from "./store/db.js";
 import { config } from "./config.js";
 import { spawn } from "child_process";
 import { checkForUpdate } from "./update.js";
+import { ensureWorkspaceProfile, getWorkspaceProfileDir } from "./workspace.js";
+import { startHeartbeatLoop } from "./heartbeat.js";
+
+let stopHeartbeatLoop: (() => void) | undefined;
 
 function truncate(text: string, max = 200): string {
   const oneLine = text.replace(/\n/g, " ").trim();
@@ -29,6 +33,9 @@ async function main(): Promise<void> {
   getDb();
   console.log("[max] Database initialized");
 
+  ensureWorkspaceProfile();
+  console.log(`[max] Workspace profile ready at ${getWorkspaceProfileDir()}`);
+
   // Start AI runtime client
   console.log(`[max] Starting ${config.aiProvider} runtime client...`);
   const client = await getClient();
@@ -42,13 +49,31 @@ async function main(): Promise<void> {
   // Wire up proactive notifications — route to the originating channel
   setProactiveNotify((text, channel) => {
     console.log(`[max] bg-notify (${channel ?? "all"}) ⟵  ${truncate(text)}`);
-    if (!channel || channel === "telegram") {
+    if (channel === "none") {
+      return;
+    }
+    if (!channel || channel === "telegram" || channel === "all") {
       if (config.telegramEnabled) sendProactiveMessage(text);
     }
-    if (!channel || channel === "tui") {
+    if (!channel || channel === "tui" || channel === "all") {
       broadcastToSSE(text);
     }
   });
+
+  stopHeartbeatLoop = startHeartbeatLoop((text, channel) => {
+    if (channel === "none") {
+      return;
+    }
+    if ((channel === "telegram" || channel === "all") && config.telegramEnabled) {
+      void sendProactiveMessage(text).catch(() => {});
+    }
+    if (channel === "tui" || channel === "all") {
+      broadcastToSSE(text);
+    }
+  });
+  if (config.heartbeatEveryMs > 0) {
+    console.log(`[max] Heartbeat enabled every ${config.heartbeatEveryMs}ms → ${config.heartbeatTarget}`);
+  }
 
   // Start HTTP API for TUI
   await startApiServer();
@@ -116,6 +141,8 @@ async function shutdown(): Promise<void> {
   if (config.telegramEnabled) {
     try { await stopBot(); } catch { /* best effort */ }
   }
+  stopHeartbeatLoop?.();
+  stopHeartbeatLoop = undefined;
 
   // Destroy all active worker sessions to free memory
   await Promise.allSettled(
@@ -143,6 +170,8 @@ export async function restartDaemon(): Promise<void> {
     await sendProactiveMessage("Restarting — back in a sec ⏳").catch(() => {});
     try { await stopBot(); } catch { /* best effort */ }
   }
+  stopHeartbeatLoop?.();
+  stopHeartbeatLoop = undefined;
 
   // Destroy all active worker sessions to free memory
   await Promise.allSettled(

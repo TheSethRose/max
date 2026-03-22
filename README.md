@@ -31,6 +31,8 @@ max setup
 
 This creates `~/.max/` and walks you through configuration (Telegram bot token, etc.). Telegram is optional — you can use Max with just the terminal UI.
 
+Setup also creates a dedicated profile workspace at `~/.max/workspace/profile/` for assistant-specific markdown files like `IDENTITY.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, and `STANDING_ORDERS.md`.
+
 During setup you'll choose either **GitHub Copilot** or **Mastra**.
 
 ### 2. Make sure your selected runtime is ready
@@ -50,6 +52,10 @@ Supported variables:
 - `AI_PROVIDER=copilot`
 - `AI_MODEL=claude-sonnet-4.6`
 - `CLASSIFIER_MODEL=gpt-4.1`
+- `HEARTBEAT_EVERY=0m`
+- `HEARTBEAT_TARGET=none`
+- `HEARTBEAT_AUTONOMY=observe`
+- `HEARTBEAT_ACTIVE_HOURS=08:00-22:00`
 
 Mastra example:
 
@@ -62,6 +68,47 @@ Backward compatibility:
 
 - If `AI_MODEL` is unset and `COPILOT_MODEL` is set, Max will use `COPILOT_MODEL`.
 - If `AI_PROVIDER` is unset, Max defaults to `copilot`.
+
+### Profile workspace
+
+Max keeps user-owned profile files outside the repo in:
+
+```bash
+~/.max/workspace/profile/
+```
+
+These files work alongside `src/copilot/system-message.ts` and `src/copilot/tools.ts`:
+
+- `IDENTITY.md` — who Max is
+- `SOUL.md` — tone, boundaries, and behavior
+- `USER.md` — who Max is helping
+- `TOOLS.md` — machine-specific notes and safe defaults
+- `HEARTBEAT.md` — tiny recurring checklist for scheduled awareness
+- `STANDING_ORDERS.md` — what Max may do without asking
+- `BOOTSTRAP.md` — first-run setup notes
+
+This keeps assistant state out of the repo root while still giving Max durable context.
+
+### Heartbeat automation
+
+Heartbeat is off by default. To enable it, set a cadence and edit `~/.max/workspace/profile/HEARTBEAT.md`.
+
+Example:
+
+```bash
+HEARTBEAT_EVERY=30m
+HEARTBEAT_TARGET=telegram
+HEARTBEAT_AUTONOMY=notify
+HEARTBEAT_ACTIVE_HOURS=08:00-22:00
+```
+
+Autonomy modes:
+
+- `observe` — inspect only, no tool actions
+- `notify` — inspect and notify, but avoid external changes
+- `act` — take internal actions only when allowed by `STANDING_ORDERS.md`
+
+If `HEARTBEAT.md` is effectively empty, Max skips heartbeat runs to save tokens.
 
 Example:
 

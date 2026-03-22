@@ -109,6 +109,13 @@ export function logConversation(role: "user" | "assistant" | "system", content: 
   }
 }
 
+/** Clear the recent conversation recovery buffer without touching memories or other state. */
+export function clearConversationLog(): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM conversation_log`).run();
+  logInsertCount = 0;
+}
+
 /** Get recent conversation history formatted for injection into system message. */
 export function getRecentConversation(limit = 20): string {
   const db = getDb();

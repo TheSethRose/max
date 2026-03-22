@@ -17,6 +17,10 @@ const configSchema = z.object({
   CLASSIFIER_MODEL: z.string().optional(),
   COPILOT_MODEL: z.string().optional(),
   WORKER_TIMEOUT: z.string().optional(),
+  HEARTBEAT_EVERY: z.string().optional(),
+  HEARTBEAT_TARGET: z.enum(["none", "telegram", "tui", "all"]).optional(),
+  HEARTBEAT_AUTONOMY: z.enum(["observe", "notify", "act"]).optional(),
+  HEARTBEAT_ACTIVE_HOURS: z.string().optional(),
 });
 
 const raw = configSchema.parse(process.env);
@@ -41,6 +45,86 @@ const parsedWorkerTimeout = raw.WORKER_TIMEOUT
 if (!Number.isInteger(parsedWorkerTimeout) || parsedWorkerTimeout <= 0) {
   throw new Error(`WORKER_TIMEOUT must be a positive integer (ms), got: "${raw.WORKER_TIMEOUT}"`);
 }
+
+function parseDurationToMs(value: string | undefined, fallbackMs: number): number {
+  if (!value || !value.trim()) {
+    return fallbackMs;
+  }
+
+  const trimmed = value.trim().toLowerCase();
+  const match = trimmed.match(/^(\d+)(ms|s|m|h|d)?$/);
+  if (!match) {
+    throw new Error(
+      `HEARTBEAT_EVERY must be a duration like '30m', '1h', '45s', or '0m'. Got: "${value}"`,
+    );
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2] || "m";
+  const multiplier = unit === "ms"
+    ? 1
+    : unit === "s"
+      ? 1_000
+      : unit === "m"
+        ? 60_000
+        : unit === "h"
+          ? 3_600_000
+          : 86_400_000;
+
+  return amount * multiplier;
+}
+
+export interface ActiveHoursRange {
+  raw: string;
+  startMinutes: number;
+  endMinutes: number;
+}
+
+function parseClockValue(label: string, value: string): number {
+  const match = value.match(/^(\d{2}):(\d{2})$/);
+  if (!match) {
+    throw new Error(`HEARTBEAT_ACTIVE_HOURS has an invalid ${label} time: "${value}"`);
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (Number.isNaN(hours) || Number.isNaN(minutes) || hours < 0 || hours > 24 || minutes < 0 || minutes > 59) {
+    throw new Error(`HEARTBEAT_ACTIVE_HOURS has an invalid ${label} time: "${value}"`);
+  }
+  if (hours === 24 && minutes !== 0) {
+    throw new Error(`HEARTBEAT_ACTIVE_HOURS has an invalid ${label} time: "${value}"`);
+  }
+
+  return hours * 60 + minutes;
+}
+
+function parseActiveHours(value: string | undefined): ActiveHoursRange | undefined {
+  if (!value || !value.trim()) {
+    return undefined;
+  }
+
+  const match = value.trim().match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+  if (!match) {
+    throw new Error(
+      `HEARTBEAT_ACTIVE_HOURS must use HH:MM-HH:MM format, for example '08:00-22:00'. Got: "${value}"`,
+    );
+  }
+
+  const startMinutes = parseClockValue("start", match[1]);
+  const endMinutes = parseClockValue("end", match[2]);
+  if (startMinutes === endMinutes) {
+    throw new Error("HEARTBEAT_ACTIVE_HOURS start and end cannot be the same time");
+  }
+
+  return {
+    raw: value.trim(),
+    startMinutes,
+    endMinutes,
+  };
+}
+
+const parsedHeartbeatEveryMs = parseDurationToMs(raw.HEARTBEAT_EVERY, 0);
+const parsedHeartbeatActiveHours = parseActiveHours(raw.HEARTBEAT_ACTIVE_HOURS);
 
 export const DEFAULT_MODEL = "claude-sonnet-4.6";
 export const DEFAULT_AI_MODEL = DEFAULT_MODEL;
@@ -105,6 +189,10 @@ export const config = {
   authorizedUserId: parsedUserId,
   apiPort: parsedPort,
   workerTimeoutMs: parsedWorkerTimeout,
+  heartbeatEveryMs: parsedHeartbeatEveryMs,
+  heartbeatTarget: raw.HEARTBEAT_TARGET || "none",
+  heartbeatAutonomy: raw.HEARTBEAT_AUTONOMY || "observe",
+  heartbeatActiveHours: parsedHeartbeatActiveHours,
   aiProvider: parsedProvider,
   classifierModel: raw.CLASSIFIER_MODEL || getDefaultClassifierModel(parsedProvider),
   get aiModel(): string {
