@@ -3,6 +3,7 @@ import { join } from "path";
 import {
   BOOTSTRAP_SEEDED_MARKER_PATH,
   BOOTSTRAP_SOURCE_PATH,
+  DEFAULT_PROFILE_TEMPLATES_DIR,
   LOCAL_GIT_DIR_PATH,
   PROFILE_DIR,
 } from "./paths.js";
@@ -21,7 +22,6 @@ type ProfileFileName =
 interface ProfileFileDefinition {
   name: ProfileFileName;
   modes: PromptProfileMode[];
-  template: string;
 }
 
 export interface WorkspaceProfileStatus {
@@ -35,115 +35,32 @@ const HEARTBEAT_ACK_MAX_CHARS = 300;
 
 const PROFILE_FILES: readonly ProfileFileDefinition[] = [
   {
+    name: "BOOTSTRAP.md",
+    modes: ["orchestrator"],
+  },
+  {
     name: "IDENTITY.md",
     modes: ["orchestrator", "worker"],
-    template: `# Identity
-
-Name: Max
-Role: Personal AI assistant for development and operations
-Vibe: Warm, direct, competent, lightly witty
-Signature: 🤖
-
-Notes:
-- Keep this brief and durable.
-- This file should describe who Max is, not task-specific instructions.
-`,
   },
   {
     name: "SOUL.md",
     modes: ["orchestrator"],
-    template: `# Soul
-
-Behavior guidelines:
-
-- Be helpful without filler.
-- Prefer competence over theatrics.
-- Read context before asking obvious questions.
-- Be cautious with external actions and bold with internal analysis.
-- Tell the user when an important profile rule changes.
-
-Boundaries:
-
-- Do not impersonate the user.
-- Ask before public, external, destructive, or expensive actions unless standing orders explicitly allow them.
-- Keep private data private.
-`,
   },
   {
     name: "USER.md",
     modes: ["orchestrator", "worker", "heartbeat"],
-    template: `# User
-
-Keep user-specific identity, timezone, and working preferences here instead of hard-coding them in Max source.
-
-Name:
-Preferred name:
-Timezone:
-Pronouns:
-
-Current context:
-
--
-
-Preferences:
-
--
-`,
   },
   {
     name: "TOOLS.md",
     modes: ["orchestrator", "worker", "heartbeat"],
-    template: `# Tool notes
-
-Use this file for machine-specific details that should not live in source code.
-
-Examples:
-
-- Preferred directories
-- Hostnames or local aliases
-- Safe default channels
-- Notes about installed CLIs or services
-- Human-readable descriptions of local setup
-`,
   },
   {
     name: "HEARTBEAT.md",
     modes: ["heartbeat"],
-    template: `# Heartbeat checklist
-
-<!--
-Keep this file tiny. Add short recurring checks below when you want scheduled awareness.
-If this file only contains headings/comments, Max will skip heartbeat runs.
--->
-`,
   },
   {
     name: "STANDING_ORDERS.md",
     modes: ["orchestrator", "worker", "heartbeat"],
-    template: `# Standing orders
-
-Autonomy mode:
-
-- observe | notify | act
-
-Allowed without asking:
-
-- summarize finished background work
-- flag urgent follow-ups
-
-Ask first before:
-
-- messaging third parties
-- public posts or emails
-- destructive changes
-- changing persistent config or installing new dependencies
-
-Never do autonomously:
-
-- irreversible external actions
-- anything that spends money
-- anything that could expose secrets or private data
-`,
   },
 ] as const;
 
@@ -164,6 +81,23 @@ export function getWorkspaceProfileDir(): string {
 
 export function getWorkspaceProfilePath(name: ProfileFileName): string {
   return join(PROFILE_DIR, name);
+}
+
+function getBundledProfileTemplatePath(name: ProfileFileName): string {
+  return join(DEFAULT_PROFILE_TEMPLATES_DIR, name);
+}
+
+function seedBundledProfileFile(name: ProfileFileName): boolean {
+  const filePath = getWorkspaceProfilePath(name);
+  const templatePath = getBundledProfileTemplatePath(name);
+
+  if (existsSync(filePath) || !existsSync(templatePath)) {
+    return false;
+  }
+
+  const content = readFileSync(templatePath, "utf-8");
+  writeFileSync(filePath, content.endsWith("\n") ? content : `${content}\n`, "utf-8");
+  return true;
 }
 
 function seedBootstrapFromBundledSource(): { seededBootstrap: boolean; removedLocalBootstrapSource: boolean } {
@@ -194,9 +128,8 @@ export function ensureWorkspaceProfile(): WorkspaceProfileStatus {
   mkdirSync(PROFILE_DIR, { recursive: true });
 
   for (const file of PROFILE_FILES) {
-    const filePath = getWorkspaceProfilePath(file.name);
-    if (!existsSync(filePath)) {
-      writeFileSync(filePath, `${file.template.trimEnd()}\n`, "utf-8");
+    if (file.name !== "BOOTSTRAP.md") {
+      seedBundledProfileFile(file.name);
     }
   }
 

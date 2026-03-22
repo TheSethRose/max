@@ -79,6 +79,7 @@ if [ "$DEV_MODE" = true ]; then
   echo ""
   info "Running setup from local build..."
   echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the default, and Mastra is also available.${RESET}"
+  echo -e "  ${DIM}Setup also deploys the bundled profile markdown files into ~/.max/workspace/profile/.${RESET}"
   echo ""
   node dist/setup.js < /dev/tty
 else
@@ -89,6 +90,7 @@ else
   echo ""
   info "Let's get Max configured..."
   echo -e "  ${DIM}You'll choose your AI provider during setup. GitHub Copilot is the default, and Mastra is also available.${RESET}"
+  echo -e "  ${DIM}Setup also deploys the bundled profile markdown files into ~/.max/workspace/profile/.${RESET}"
   echo ""
   max setup < /dev/tty
 fi

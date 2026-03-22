@@ -668,4 +668,3 @@ Max is a sophisticated AI orchestrator that:
 8. **Scales safely** via message queue serialization and worker limits (max 5 concurrent)
 
 All configuration, state, skills, and conversation history live in ~/.max/ (portable, user-scoped).
-

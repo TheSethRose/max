@@ -17,8 +17,11 @@ export const WORKSPACE_DIR = join(MAX_HOME, "workspace");
 /** Path to assistant profile markdown files */
 export const PROFILE_DIR = join(WORKSPACE_DIR, "profile");
 
+/** Bundled default markdown files that seed the workspace profile during setup/startup. */
+export const DEFAULT_PROFILE_TEMPLATES_DIR = join(PACKAGE_ROOT, "defaults", "profile");
+
 /** Bootstrap file shipped with the repo/package. */
-export const BOOTSTRAP_SOURCE_PATH = join(PACKAGE_ROOT, "BOOTSTRAP.md");
+export const BOOTSTRAP_SOURCE_PATH = join(DEFAULT_PROFILE_TEMPLATES_DIR, "BOOTSTRAP.md");
 
 /** One-time marker so repo bootstrap is only seeded once per local profile. */
 export const BOOTSTRAP_SEEDED_MARKER_PATH = join(PROFILE_DIR, ".bootstrap-seeded");

@@ -319,4 +319,3 @@ All routes require Bearer token from ~/.max/api-token (except /status).
 | `src/copilot/router.ts` | 201 | Model selection logic |
 | `src/setup.ts` | 313 | Interactive setup wizard |
 | `src/config.ts` | 90 | Config loading & persistence |
-

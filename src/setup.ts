@@ -83,6 +83,47 @@ function ask(rl: readline.Interface, question: string): Promise<string> {
   return new Promise((resolve) => rl.question(question, resolve));
 }
 
+function isSensitiveConfigKey(name: string): boolean {
+  return /(TOKEN|KEY|SECRET|PASSWORD)/i.test(name);
+}
+
+function obfuscateValue(value: string): string {
+  if (!value) return value;
+
+  const trimmed = value.trim();
+  if (trimmed.length <= 4) {
+    return "•".repeat(trimmed.length);
+  }
+  if (trimmed.length <= 8) {
+    return `${trimmed.slice(0, 1)}${"•".repeat(trimmed.length - 2)}${trimmed.slice(-1)}`;
+  }
+
+  return `${trimmed.slice(0, 4)}${"•".repeat(Math.min(8, trimmed.length - 8))}${trimmed.slice(-4)}`;
+}
+
+function formatExistingValue(value: string | undefined, opts?: { keyName?: string; sensitive?: boolean }): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  const sensitive = opts?.sensitive ?? (opts?.keyName ? isSensitiveConfigKey(opts.keyName) : false);
+  return sensitive ? obfuscateValue(value) : value.trim();
+}
+
+function formatKeepCurrentHint(value: string | undefined, opts?: { keyName?: string; sensitive?: boolean }): string {
+  const formatted = formatExistingValue(value, opts);
+  return formatted ? ` ${DIM}(Enter to keep ${formatted})${RESET}` : "";
+}
+
+function formatCurrentStatus(value: string | undefined, opts?: { keyName?: string; sensitive?: boolean }): string | undefined {
+  const formatted = formatExistingValue(value, opts);
+  return formatted ? `${DIM}current: ${formatted}${RESET}` : undefined;
+}
+
+function formatConfiguredStatus(configured: boolean, label = "configured"): string {
+  return configured ? `${DIM}current: ${label}${RESET}` : `${DIM}current: not configured${RESET}`;
+}
+
 async function askRequired(rl: readline.Interface, prompt: string): Promise<string> {
   while (true) {
     const answer = (await ask(rl, prompt)).trim();
@@ -124,6 +165,11 @@ async function askPicker<T extends string>(
 ): Promise<T> {
   console.log(`${BOLD}${label}${RESET}\n`);
   const defaultIdx = Math.max(0, options.findIndex((o) => o.id === defaultId));
+  const defaultOption = options[defaultIdx];
+  if (defaultOption) {
+    console.log(`  ${DIM}Current: ${defaultOption.label}${RESET}`);
+    console.log();
+  }
   for (let i = 0; i < options.length; i++) {
     const marker = i === defaultIdx ? `${GREEN}▸${RESET}` : " ";
     const tag = i === defaultIdx ? ` ${DIM}(default)${RESET}` : "";
@@ -131,7 +177,10 @@ async function askPicker<T extends string>(
     console.log(`       ${DIM}${options[i].desc}${RESET}`);
   }
   console.log();
-  const input = await ask(rl, `  Pick a number ${DIM}(1-${options.length}, Enter for default)${RESET}: `);
+  const input = await ask(
+    rl,
+    `  Pick a number ${DIM}(1-${options.length}, Enter to keep ${defaultOption?.label || "current"})${RESET}: `,
+  );
   const num = parseInt(input.trim(), 10);
   if (num >= 1 && num <= options.length) return options[num - 1].id;
   return options[defaultIdx].id;
@@ -200,7 +249,15 @@ ${BOLD}╔═══════════════════════�
   let telegramToken = existing.TELEGRAM_BOT_TOKEN || "";
   let userId = existing.AUTHORIZED_USER_ID || "";
 
-  const setupTelegram = await askYesNo(rl, "Would you like to set up Telegram?");
+  const setupTelegramStatus = [
+    formatCurrentStatus(telegramToken, { keyName: "TELEGRAM_BOT_TOKEN" }),
+    formatCurrentStatus(userId, { keyName: "AUTHORIZED_USER_ID" }),
+  ].filter((value): value is string => !!value).join(`${DIM}, ${RESET}`);
+  const setupTelegram = await askYesNo(
+    rl,
+    `Would you like to set up Telegram?${setupTelegramStatus ? ` ${DIM}(${setupTelegramStatus})${RESET}` : ` ${formatConfiguredStatus(false)}`}`,
+    !!telegramToken || !!userId,
+  );
 
   if (setupTelegram) {
     // ── Step 1: Create bot ──
@@ -210,9 +267,11 @@ ${BOLD}╔═══════════════════════�
     console.log(`  3. Copy the bot token (looks like ${DIM}123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11${RESET})`);
     console.log();
 
-    const tokenInput = await askRequired(
+    const tokenInput = await askRequiredOrKeepCurrent(
       rl,
-      `  Bot token${telegramToken ? ` ${DIM}(current: ${telegramToken.slice(0, 12)}...)${RESET}` : ""}: `
+      `  Bot token${formatKeepCurrentHint(telegramToken, { keyName: "TELEGRAM_BOT_TOKEN" })}: `,
+      telegramToken,
+      `${YELLOW}  This field is required. Please enter a value.${RESET}`,
     );
     telegramToken = tokenInput;
 
@@ -230,9 +289,11 @@ ${BOLD}╔═══════════════════════�
 
     // Require user ID — cannot proceed without it
     while (true) {
-      const userIdInput = await askRequired(
+      const userIdInput = await askRequiredOrKeepCurrent(
         rl,
-        `  Your user ID${userId ? ` ${DIM}(current: ${userId})${RESET}` : ""}: `
+        `  Your user ID${formatKeepCurrentHint(userId, { keyName: "AUTHORIZED_USER_ID" })}: `,
+        userId,
+        `${YELLOW}  That doesn't look like a valid user ID. It should be a positive number.${RESET}`,
       );
       const parsed = parseInt(userIdInput, 10);
       if (!Number.isNaN(parsed) && parsed > 0) {
@@ -390,7 +451,7 @@ ${BOLD}╔═══════════════════════�
       console.log(`${DIM}Mastra will use ${mastraApiKeyEnv} for ${model}.${RESET}`);
       mastraApiKeyValue = await askRequiredOrKeepCurrent(
         rl,
-        `  ${mastraApiKeyEnv}${currentApiKey ? ` ${DIM}(Enter to keep current saved key)${RESET}` : ""}: `,
+        `  ${mastraApiKeyEnv}${formatKeepCurrentHint(currentApiKey, { keyName: mastraApiKeyEnv })}: `,
         currentApiKey,
         `${YELLOW}  ${mastraApiKeyEnv} is required for the selected model.${RESET}`,
       );
@@ -407,7 +468,7 @@ ${BOLD}╔═══════════════════════�
         const currentApiKey = existing[mastraApiKeyEnv] || "";
         mastraApiKeyValue = await askRequiredOrKeepCurrent(
           rl,
-          `  ${mastraApiKeyEnv}${currentApiKey ? ` ${DIM}(Enter to keep current saved key)${RESET}` : ""}: `,
+          `  ${mastraApiKeyEnv}${formatKeepCurrentHint(currentApiKey, { keyName: mastraApiKeyEnv })}: `,
           currentApiKey,
           `${YELLOW}  ${mastraApiKeyEnv} is required for the selected model.${RESET}`,
         );
@@ -466,6 +527,7 @@ ${BOLD}╔═══════════════════════�
 ${GREEN}${BOLD}✅ Max is ready!${RESET}
 ${DIM}Config saved to ${ENV_PATH}${RESET}
 ${DIM}Profile workspace: ${getWorkspaceProfileDir()}${RESET}
+${DIM}Default profile markdown deployed from bundled templates during setup${RESET}
 ${workspaceStatus.bootstrapActive ? `${DIM}Bootstrap active: ${getWorkspaceProfilePath("BOOTSTRAP.md")}${RESET}` : ""}
 ${workspaceStatus.removedLocalBootstrapSource ? `${DIM}Local repo bootstrap removed after seeding (one-time setup)${RESET}` : ""}
 
