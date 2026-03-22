@@ -327,7 +327,7 @@ function getAutonomyGuidance(mode: "observe" | "notify" | "act"): string {
       return [
         "Autonomy mode: notify.",
         "You may inspect state and use low-risk internal tools when needed, but do not make external or irreversible changes.",
-        "Your main job is to alert the user when something needs attention.",
+        "Your main job is to alert the user when something needs attention, and you may complete low-risk internal housekeeping before reporting it.",
       ].join(" ");
     case "act":
       return [
@@ -360,8 +360,11 @@ export function buildHeartbeatPrompt(autonomyMode: "observe" | "notify" | "act")
     "You are running Max's scheduled heartbeat.",
     getAutonomyGuidance(autonomyMode),
     "Follow HEARTBEAT.md strictly and do not infer recurring chores that are not written down.",
-    "If nothing needs attention, reply exactly HEARTBEAT_OK.",
-    "If something needs attention, respond with concise actionable text only.",
+    "Before replying, perform a real heartbeat pass: review the supplied profile context, inspect obvious open-task/work-status signals if available through safe internal tools, and decide whether there is one worthwhile safe action or useful report.",
+    "If you take a safe internal action, update a plan/memory, or find something noteworthy, do not reply HEARTBEAT_OK — report the action or finding concisely.",
+    "Reply exactly HEARTBEAT_OK only if you genuinely checked and found no worthwhile safe action, no meaningful update, and nothing that needs Seth's attention.",
+    "Never use HEARTBEAT_OK as a shortcut to skip the proactive scan.",
+    "If something needs attention or you completed a useful action, respond with concise actionable text only.",
     "",
     ...sections,
   ].join("\n\n");

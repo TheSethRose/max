@@ -64,17 +64,22 @@ async function main(): Promise<void> {
     }
   });
 
-  stopHeartbeatLoop = startHeartbeatLoop((text, channel) => {
-    if (channel === "none") {
-      return;
-    }
-    if ((channel === "telegram" || channel === "all") && config.telegramEnabled) {
-      void sendProactiveMessage(text).catch(() => {});
-    }
-    if (channel === "tui" || channel === "all") {
-      broadcastToSSE(text);
-    }
-  });
+  stopHeartbeatLoop = startHeartbeatLoop(
+    (text, channel) => {
+      if (channel === "none") {
+        return;
+      }
+      if ((channel === "telegram" || channel === "all") && config.telegramEnabled) {
+        void sendProactiveMessage(text).catch(() => {});
+      }
+      if (channel === "tui" || channel === "all") {
+        broadcastToSSE(text);
+      }
+    },
+    (message) => {
+      console.log(`[max] heartbeat: ${message}`);
+    },
+  );
   if (config.heartbeatEveryMs > 0) {
     console.log(`[max] Heartbeat enabled every ${config.heartbeatEveryMs}ms → ${config.heartbeatTarget}`);
   }
