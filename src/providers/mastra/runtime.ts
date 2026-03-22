@@ -67,6 +67,18 @@ type MastraStreamChunk = {
   };
 };
 
+type MastraStreamRunResult = {
+  content: string;
+  observedToolActivity: boolean;
+};
+
+const NARRATED_DELEGATION_PATTERNS = [
+  /\bre-?task(?:ing)?\b[\s\S]{0,80}\bworker\b/i,
+  /\b(?:dispatch(?:ing)?|send(?:ing)?|creating|starting|spinning up|opening)\b[\s\S]{0,80}\b(?:worker|session)\b/i,
+  /\b(?:i(?:'|’)ll|i will|let me|going to)\b[\s\S]{0,120}\b(?:worker|session|tool)\b/i,
+  /\b(?:i(?:'|’)ll|i will)\b[\s\S]{0,120}\b(?:let you know|notify you)\b[\s\S]{0,40}\bwhen\b[\s\S]{0,20}\bdone\b/i,
+];
+
 function ensureMastraModelConfigured(): void {
   const model = config.aiModel?.trim();
   if (!model) {
@@ -135,6 +147,23 @@ function buildInstructions(options: AISessionOptions): string {
   return options.systemMessage?.content
     ? `${preamble}\n\n${options.systemMessage.content}`
     : preamble;
+}
+
+function hasMastraTools(tools: MastraToolMap | undefined): tools is MastraToolMap {
+  return !!tools && Object.keys(tools).length > 0;
+}
+
+function shouldRetryNarratedDelegation(content: string, tools: MastraToolMap | undefined): boolean {
+  if (!hasMastraTools(tools)) {
+    return false;
+  }
+
+  const normalized = content.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  return NARRATED_DELEGATION_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -303,12 +332,18 @@ async function prepareMastraSession(options: AISessionOptions, sessionId: string
   }
 }
 
-function createAgent(options: AISessionOptions, tools: MastraToolMap | undefined): any {
+function createAgent(
+  options: AISessionOptions,
+  tools: MastraToolMap | undefined,
+  extraInstructions?: string,
+): any {
   const workspace = buildWorkspace(options);
   const agentOptions: Record<string, unknown> = {
     id: randomUUID(),
     name: options.workingDirectory ? "Max Worker" : "Max Orchestrator",
-    instructions: buildInstructions(options),
+    instructions: extraInstructions
+      ? `${buildInstructions(options)}\n\n${extraInstructions}`
+      : buildInstructions(options),
     model: options.model,
   };
 
@@ -354,55 +389,26 @@ class MastraSession implements AISession {
     }
 
     const checkpoint = [...this.messages];
-    const agent = createAgent(this.options, this.tools);
     this.abortController = new AbortController();
     const timeout = timeoutMs ? setTimeout(() => this.abortController?.abort(), timeoutMs) : undefined;
-
-    let finalText = "";
-    let streamError: unknown;
 
     try {
       this.messages.push({ role: "user", content: request.prompt });
       this.persist();
 
-      const stream = await agent.stream(this.messages as any, {
-        abortSignal: this.abortController.signal,
-        onFinish: (result: { text?: string }) => {
-          finalText = result.text ?? "";
-        },
-        onError: ({ error }: { error: unknown }) => {
-          streamError = error;
-        },
-      } as any);
-
-      let accumulated = "";
-      for await (const chunk of stream.fullStream as AsyncIterable<MastraStreamChunk>) {
-        switch (chunk.type) {
-          case "text-delta": {
-            const delta = chunk.payload?.text ?? "";
-            if (delta) {
-              accumulated += delta;
-              this.emit("message.delta", { deltaText: delta });
-            }
-            break;
-          }
-          case "tool-result":
-            this.emit("tool.complete", {});
-            break;
-          case "error":
-            streamError = chunk.payload?.error ?? new Error("Mastra stream error");
-            break;
-        }
+      let result = await this.runAgentTurn(createAgent(this.options, this.tools));
+      if (!result.observedToolActivity && shouldRetryNarratedDelegation(result.content, this.tools)) {
+        result = await this.runAgentTurn(
+          createAgent(
+            this.options,
+            this.tools,
+            "You just described a worker/session/tool action without actually calling a tool. Re-answer this turn by using the real tool first. If no tool is needed, answer directly and do not claim you are about to delegate.",
+          ),
+          "required",
+        );
       }
 
-      if (streamError) {
-        throw streamError;
-      }
-      if (this.abortController.signal.aborted) {
-        throw new Error("Cancelled");
-      }
-
-      const content = finalText || accumulated;
+      const content = result.content;
       this.messages.push({ role: "assistant", content });
       this.persist();
       return { content };
@@ -419,6 +425,62 @@ class MastraSession implements AISession {
       }
       this.abortController = undefined;
     }
+  }
+
+  private async runAgentTurn(agent: any, toolChoice?: "required"): Promise<MastraStreamRunResult> {
+    let finalText = "";
+    let streamError: unknown;
+    let accumulated = "";
+    let observedToolActivity = false;
+    const deferTextEmission = hasMastraTools(this.tools);
+
+    const stream = await agent.stream(this.messages as any, {
+      abortSignal: this.abortController?.signal,
+      toolChoice,
+      onFinish: (result: { text?: string }) => {
+        finalText = result.text ?? "";
+      },
+      onError: ({ error }: { error: unknown }) => {
+        streamError = error;
+      },
+    } as any);
+
+    for await (const chunk of stream.fullStream as AsyncIterable<MastraStreamChunk>) {
+      if (chunk.type.startsWith("tool")) {
+        observedToolActivity = true;
+      }
+
+      switch (chunk.type) {
+        case "text-delta": {
+          const delta = chunk.payload?.text ?? "";
+          if (delta) {
+            accumulated += delta;
+            if (!deferTextEmission) {
+              this.emit("message.delta", { deltaText: delta });
+            }
+          }
+          break;
+        }
+        case "tool-result":
+          this.emit("tool.complete", {});
+          break;
+        case "error":
+          streamError = chunk.payload?.error ?? new Error("Mastra stream error");
+          break;
+      }
+    }
+
+    if (streamError) {
+      throw streamError;
+    }
+    if (this.abortController?.signal.aborted) {
+      throw new Error("Cancelled");
+    }
+
+    return {
+      content: finalText || accumulated,
+      observedToolActivity,
+    };
   }
 
   public async destroy(): Promise<void> {

@@ -11,7 +11,7 @@ import { DB_PATH, ENV_PATH, SESSIONS_DIR } from "../paths.js";
 import { getCurrentSourceChannel } from "./orchestrator.js";
 import { getRouterConfig, type RouteResult, updateRouterConfig } from "./router.js";
 import { getWorkerSystemMessage } from "./system-message.js";
-import { renderProfileContext } from "../workspace.js";
+import { getWorkspaceProfileDir, renderProfileContext } from "../workspace.js";
 
 function isTimeoutError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -27,6 +27,29 @@ function formatWorkerError(workerName: string, startedAt: number, timeoutMs: num
     return `Worker '${workerName}' timed out after ${elapsed}s (limit: ${limit}s). The task was still running but had to be stopped. To allow more time, set WORKER_TIMEOUT=${timeoutMs * 2} in ~/.max/.env`;
   }
   return `Worker '${workerName}' failed after ${elapsed}s: ${msg}`;
+}
+
+const PROFILE_WORKSPACE_DIR = resolve(getWorkspaceProfileDir());
+
+function isProfileWorkspaceDir(workingDir: string): boolean {
+  const resolvedDir = resolve(workingDir);
+  return resolvedDir === PROFILE_WORKSPACE_DIR || resolvedDir.startsWith(PROFILE_WORKSPACE_DIR + sep);
+}
+
+function withProfileWorkspaceGuidance(workingDir: string, prompt: string): string {
+  if (!isProfileWorkspaceDir(workingDir)) {
+    return prompt;
+  }
+
+  return [
+    `Profile workspace: ${workingDir}`,
+    "This is Max's user-owned profile workspace, not the Max source repo.",
+    "If you intentionally complete bootstrap by deleting BOOTSTRAP.md, treat the missing file as success.",
+    "Delete BOOTSTRAP.md only after the other profile updates are finished.",
+    "After intentionally deleting or renaming a file, do not read the old path again. If you need to confirm the result, use a directory listing or file-existence check instead.",
+    "Task:",
+    prompt,
+  ].join("\n\n");
 }
 
 const BLOCKED_WORKER_DIRS = [
@@ -124,7 +147,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
           const timeoutMs = config.workerTimeoutMs;
           // Non-blocking: dispatch work and return immediately
           session.sendAndWait({
-            prompt: `Working directory: ${args.working_dir}\n\n${args.initial_prompt}`,
+            prompt: `Working directory: ${args.working_dir}\n\n${withProfileWorkspaceGuidance(args.working_dir, args.initial_prompt)}`,
           }, timeoutMs).then((result) => {
             worker.lastOutput = result?.content || "No response";
             deps.onWorkerComplete(args.name, worker.lastOutput);
@@ -172,7 +195,7 @@ export function createTools(deps: ToolDeps): AIToolDefinition[] {
 
         const timeoutMs = config.workerTimeoutMs;
         // Non-blocking: dispatch work and return immediately
-        worker.session.sendAndWait({ prompt: args.prompt }, timeoutMs).then((result) => {
+        worker.session.sendAndWait({ prompt: withProfileWorkspaceGuidance(worker.workingDir, args.prompt) }, timeoutMs).then((result) => {
           worker.lastOutput = result?.content || "No response";
           deps.onWorkerComplete(args.name, worker.lastOutput);
         }).catch((err) => {
