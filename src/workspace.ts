@@ -168,6 +168,29 @@ export function hasHeartbeatChecklist(): boolean {
   return !isEffectivelyEmptyMarkdown(readWorkspaceProfileFile("HEARTBEAT.md"));
 }
 
+export function hasActiveBootstrap(): boolean {
+  return !isEffectivelyEmptyMarkdown(readWorkspaceProfileFile("BOOTSTRAP.md"));
+}
+
+export function wrapPromptForBootstrap(userPrompt: string): string {
+  const bootstrap = readWorkspaceProfileFile("BOOTSTRAP.md");
+  if (isEffectivelyEmptyMarkdown(bootstrap)) {
+    return userPrompt;
+  }
+
+  return [
+    "[BOOTSTRAP MODE REQUIRED]",
+    "BOOTSTRAP.md is active in ~/.max/workspace/profile and must take priority over normal conversation.",
+    "Do not respond with a generic greeting or ordinary assistance yet.",
+    "Begin or continue the onboarding flow described in BOOTSTRAP.md using 2-4 focused questions at a time.",
+    "Treat a greeting, vague opener, or first casual message as a cue to start onboarding immediately.",
+    "Only stop prioritizing bootstrap if the user explicitly defers it or BOOTSTRAP.md is deleted after genuine completion.",
+    "",
+    "Latest user message:",
+    userPrompt,
+  ].join("\n");
+}
+
 function formatFileSection(name: ProfileFileName, content: string): string | undefined {
   const normalized = normalizeContent(content);
   if (!normalized || isEffectivelyEmptyMarkdown(normalized)) {

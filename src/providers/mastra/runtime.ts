@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { basename, join, resolve } from "path";
+import { pathToFileURL } from "url";
 import { Agent } from "@mastra/core/agent";
-import { createTool } from "@mastra/core/tools";
+import { createTool, type Tool } from "@mastra/core/tools";
+import { MCPClient, type LogHandler, type MastraMCPServerDefinition, type Root } from "@mastra/mcp";
 import { LocalFilesystem, LocalSandbox, Workspace } from "@mastra/core/workspace";
 import { z } from "zod";
 import { config } from "../../config.js";
@@ -26,6 +28,13 @@ type StoredSessionMessage = {
 
 type StoredSessionState = {
   messages: StoredSessionMessage[];
+};
+
+type MastraToolMap = Record<string, Tool<any, any, any, any>>;
+
+type PreparedMastraSession = {
+  tools?: MastraToolMap;
+  mcpClient?: MCPClient;
 };
 
 const CURATED_MASTRA_MODELS: AIModelInfo[] = [
@@ -128,7 +137,125 @@ function buildInstructions(options: AISessionOptions): string {
     : preamble;
 }
 
-function buildMastraTools(tools: readonly AIToolDefinition[] | undefined): Record<string, ReturnType<typeof createTool>> | undefined {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const values = value.filter((entry): entry is string => typeof entry === "string");
+  return values.length > 0 ? values : undefined;
+}
+
+function toStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function mergeToolMaps(...toolMaps: Array<MastraToolMap | undefined>): MastraToolMap | undefined {
+  const merged = Object.assign({}, ...toolMaps.filter((toolMap): toolMap is MastraToolMap => !!toolMap));
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function buildWorkspaceRoots(workingDirectory: string | undefined): Root[] | undefined {
+  if (!workingDirectory) {
+    return undefined;
+  }
+
+  const resolvedDirectory = resolve(workingDirectory);
+  return [
+    {
+      uri: pathToFileURL(resolvedDirectory).toString(),
+      name: basename(resolvedDirectory) || resolvedDirectory,
+    },
+  ];
+}
+
+function normalizeMcpServers(options: AISessionOptions): Record<string, MastraMCPServerDefinition> | undefined {
+  if (!options.mcpServers) {
+    return undefined;
+  }
+
+  const defaultRoots = buildWorkspaceRoots(options.workingDirectory);
+  const normalizedEntries: Array<[string, MastraMCPServerDefinition]> = [];
+
+  for (const [serverName, rawConfig] of Object.entries(options.mcpServers)) {
+    if (!isRecord(rawConfig)) {
+      continue;
+    }
+
+    const timeout = typeof rawConfig.timeout === "number" ? rawConfig.timeout : undefined;
+    const logger: LogHandler | undefined = typeof rawConfig.logger === "function"
+      ? rawConfig.logger as LogHandler
+      : typeof rawConfig.log === "function"
+        ? rawConfig.log as LogHandler
+        : undefined;
+    const roots = Array.isArray(rawConfig.roots) ? rawConfig.roots as Root[] : defaultRoots;
+    const baseConfig = {
+      timeout,
+      logger,
+      roots,
+      enableServerLogs: typeof rawConfig.enableServerLogs === "boolean" ? rawConfig.enableServerLogs : undefined,
+      enableProgressTracking: typeof rawConfig.enableProgressTracking === "boolean"
+        ? rawConfig.enableProgressTracking
+        : undefined,
+      capabilities: isRecord(rawConfig.capabilities) ? rawConfig.capabilities : undefined,
+    };
+
+    if (typeof rawConfig.command === "string") {
+      normalizedEntries.push([serverName, {
+        ...baseConfig,
+        command: rawConfig.command,
+        args: toStringArray(rawConfig.args),
+        env: toStringRecord(rawConfig.env),
+        cwd: typeof rawConfig.cwd === "string"
+          ? resolve(rawConfig.cwd)
+          : options.workingDirectory
+            ? resolve(options.workingDirectory)
+            : undefined,
+      }]);
+      continue;
+    }
+
+    const rawUrl = rawConfig.url;
+    if (typeof rawUrl === "string" || rawUrl instanceof URL) {
+      const requestInit = isRecord(rawConfig.requestInit)
+        ? rawConfig.requestInit as RequestInit
+        : isRecord(rawConfig.headers)
+          ? { headers: rawConfig.headers as HeadersInit }
+          : undefined;
+
+      try {
+        normalizedEntries.push([serverName, {
+          ...baseConfig,
+          url: rawUrl instanceof URL ? rawUrl : new URL(rawUrl),
+          requestInit,
+          connectTimeout: typeof rawConfig.connectTimeout === "number" ? rawConfig.connectTimeout : undefined,
+          sessionId: typeof rawConfig.sessionId === "string" ? rawConfig.sessionId : undefined,
+        }]);
+      } catch (error) {
+        console.warn(
+          `[max] Skipping invalid MCP server '${serverName}' for Mastra: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      continue;
+    }
+
+    console.warn(`[max] Skipping MCP server '${serverName}' for Mastra: unsupported config shape`);
+  }
+
+  return normalizedEntries.length > 0 ? Object.fromEntries(normalizedEntries) : undefined;
+}
+
+function buildMastraTools(tools: readonly AIToolDefinition[] | undefined): MastraToolMap | undefined {
   if (!tools || tools.length === 0) {
     return undefined;
   }
@@ -147,9 +274,37 @@ function buildMastraTools(tools: readonly AIToolDefinition[] | undefined): Recor
   );
 }
 
-function createAgent(options: AISessionOptions): any {
+async function prepareMastraSession(options: AISessionOptions, sessionId: string): Promise<PreparedMastraSession> {
+  const localTools = buildMastraTools(options.tools);
+  const mcpServers = normalizeMcpServers(options);
+
+  if (!mcpServers) {
+    return { tools: localTools };
+  }
+
+  const mcpClient = new MCPClient({
+    id: `max-${sessionId}`,
+    servers: mcpServers,
+    timeout: 30_000,
+  });
+
+  try {
+    const mcpTools = await mcpClient.listTools();
+    return {
+      tools: mergeToolMaps(localTools, mcpTools),
+      mcpClient,
+    };
+  } catch (error) {
+    await mcpClient.disconnect().catch(() => undefined);
+    console.warn(
+      `[max] Failed to initialize MCP tools for Mastra session ${sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { tools: localTools };
+  }
+}
+
+function createAgent(options: AISessionOptions, tools: MastraToolMap | undefined): any {
   const workspace = buildWorkspace(options);
-  const tools = buildMastraTools(options.tools);
   const agentOptions: Record<string, unknown> = {
     id: randomUUID(),
     name: options.workingDirectory ? "Max Worker" : "Max Orchestrator",
@@ -183,6 +338,8 @@ class MastraSession implements AISession {
     public readonly sessionId: string,
     private readonly options: AISessionOptions,
     initialMessages: StoredSessionMessage[],
+    private readonly tools: MastraToolMap | undefined,
+    private readonly mcpClient: MCPClient | undefined,
     private readonly storagePath?: string,
   ) {
     this.messages = initialMessages;
@@ -197,7 +354,7 @@ class MastraSession implements AISession {
     }
 
     const checkpoint = [...this.messages];
-    const agent = createAgent(this.options);
+    const agent = createAgent(this.options, this.tools);
     this.abortController = new AbortController();
     const timeout = timeoutMs ? setTimeout(() => this.abortController?.abort(), timeoutMs) : undefined;
 
@@ -267,6 +424,7 @@ class MastraSession implements AISession {
   public async destroy(): Promise<void> {
     this.destroyed = true;
     this.abortController?.abort();
+    await this.mcpClient?.disconnect().catch(() => undefined);
     if (this.storagePath && existsSync(this.storagePath)) {
       unlinkSync(this.storagePath);
     }
@@ -318,7 +476,15 @@ class MastraClientAdapter implements AIClient {
     ensureMastraModelConfigured();
     const sessionId = randomUUID();
     const storagePath = getSessionPath(options.configDir, sessionId);
-    return new MastraSession(sessionId, options, [], storagePath);
+    const preparedSession = await prepareMastraSession(options, sessionId);
+    return new MastraSession(
+      sessionId,
+      options,
+      [],
+      preparedSession.tools,
+      preparedSession.mcpClient,
+      storagePath,
+    );
   }
 
   public async resumeSession(sessionId: string, options: AISessionOptions): Promise<AISession> {
@@ -329,7 +495,15 @@ class MastraClientAdapter implements AIClient {
     }
 
     const parsed = JSON.parse(readFileSync(storagePath, "utf-8")) as StoredSessionState;
-    return new MastraSession(sessionId, options, parsed.messages || [], storagePath);
+    const preparedSession = await prepareMastraSession(options, sessionId);
+    return new MastraSession(
+      sessionId,
+      options,
+      parsed.messages || [],
+      preparedSession.tools,
+      preparedSession.mcpClient,
+      storagePath,
+    );
   }
 
   public async stop(): Promise<void> {

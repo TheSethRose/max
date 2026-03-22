@@ -8,7 +8,7 @@ import { clearConversationLog, logConversation, getState, setState, deleteState,
 import { SESSIONS_DIR } from "../paths.js";
 import { resolveModel, type Tier, type RouteResult } from "./router.js";
 import type { AIClient, AISession } from "../ai/types.js";
-import { ensureWorkspaceProfile, renderProfileContext } from "../workspace.js";
+import { ensureWorkspaceProfile, hasActiveBootstrap, renderProfileContext, wrapPromptForBootstrap } from "../workspace.js";
 
 const MAX_RETRIES = 3;
 const RECONNECT_DELAYS_MS = [1_000, 3_000, 10_000];
@@ -389,9 +389,13 @@ export async function sendToOrchestrator(
   logMessage("in", sourceLabel, prompt);
 
   // Tag the prompt with its source channel
+  const promptWithBootstrap = (source.type === "telegram" || source.type === "tui") && hasActiveBootstrap()
+    ? wrapPromptForBootstrap(prompt)
+    : prompt;
+
   const taggedPrompt = source.type === "background"
-    ? prompt
-    : `[via ${sourceLabel}] ${prompt}`;
+    ? promptWithBootstrap
+    : `[via ${sourceLabel}] ${promptWithBootstrap}`;
 
   // Log role: background events are "system", user messages are "user"
   const logRole = source.type === "background" || source.type === "heartbeat" ? "system" : "user";
